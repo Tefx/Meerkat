@@ -1,0 +1,6 @@
+FROM python:slim
+
+WORKDIR /app
+ADD . /app
+RUN pip install --no-cache-dir . && rm -rf /app/*
+
