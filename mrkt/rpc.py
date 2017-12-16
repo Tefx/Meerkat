@@ -2,7 +2,6 @@ from gevent.monkey import patch_all
 patch_all()
 import struct
 import inspect
-from abc import ABC
 from json import loads as load, dumps as dump
 from gevent import socket, sleep
 import gevent
@@ -13,7 +12,7 @@ HEADER_STRUCT = ">L"
 HEADER_LEN = struct.calcsize(HEADER_STRUCT)
 
 
-class Remotable(ABC):
+class Remotable:
     state = ()
 
     def __dump__(self):

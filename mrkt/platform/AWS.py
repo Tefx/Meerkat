@@ -1,31 +1,20 @@
 from gevent.monkey import patch_all
+
 patch_all()
 import boto3
 import gevent
 import logging
-
-
-class BasePlatform:
-    def __init__(self, server_cls, server_num):
-        self.server_cls = server_cls
-        self.server_num = server_num
-
-    def servers(self):
-        raise NotImplementedError
-
-    def clean(self):
-        pass
+from .base import BasePlatform
 
 
 class EC2(BasePlatform):
-    def __init__(self, server_cls, server_num,
-                 sgroup,
-                 keyname, keyfile,
+    def __init__(self, service_cls, service_num,
+                 sgroup, keyname, keyfile,
                  vm_type="t2.micro",
                  ami="ami-25632346", username="core",
                  pgroup=None, region="ap-southeast-1",
                  clean_action="stop"):
-        super().__init__(server_cls, server_num)
+        super().__init__(service_cls, service_num)
         self.sgroup = sgroup
         self.username = username
         self.keyname = keyname
@@ -73,7 +62,7 @@ class EC2(BasePlatform):
             TagSpecifications=tags))
 
     def prepare(self):
-        need_instance_num = self.server_num - len(self.instances)
+        need_instance_num = self.service_num - len(self.instances)
         exists = self.finding_existing_instances(need_instance_num)
         for ins in exists:
             if ins.state["Name"] == "stopped":
@@ -90,11 +79,12 @@ class EC2(BasePlatform):
                 gevent.sleep(1)
                 ins.load()
 
-    def servers(self):
+    def services(self):
         self.prepare()
-        return [self.server_cls(ins.public_dns_name,
-                                username=self.username,
-                                key_filename=self.keyfile)
+        return [self.service_cls(ins.public_dns_name,
+                                 ssh_options=dict(username=self.username,
+                                                  key_filename=self.keyfile),
+                                 retry_ssh=10, retry_ssh_interval=1)
                 for ins in self.instances]
 
     def clean(self):

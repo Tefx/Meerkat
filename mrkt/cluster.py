@@ -1,41 +1,44 @@
-from math import ceil
-from . import service
-from . import platform
-from .utils import flatten_iterables, parallel_run
+from .service import BaseService
+from .platform.base import BasePlatform
+from .utils import flatten_iterables, run_on_each
 
 
 class Cluster:
-    def __init__(self, servers):
-        self.servers = [s for s in servers if isinstance(s, service.BaseService)]
-        self.platforms = [s for s in servers if isinstance(
-            s, platform.BasePlatform)]
-        servers_on_platforms = parallel_run(self.platforms, "servers")
-        self.servers.extend(flatten_iterables(*servers_on_platforms))
-        parallel_run(self.servers, "connect")
+    def __init__(self, services, **options):
+        self.services = [s for s in services if isinstance(s, BaseService)]
+        self.platforms = [s for s in services if isinstance(s, BasePlatform)]
+        servers_on_platforms = run_on_each(self.platforms, "services")
+        self.services.extend(flatten_iterables(*servers_on_platforms))
+        run_on_each(self.services, "update_options", async=False, options=options)
+        self.workers = []
 
-    def start_workers(self, entry_points, num):
-        num_pre_server = ceil(num / len(self.servers))
-        workers = parallel_run(
-            self.servers, "start_workers", entry_points, num_pre_server)
-        return flatten_iterables(*workers)
+    def __enter__(self):
+        self.prepare()
+        return self
 
-    def install_image(self, *args, **kwargs):
-        parallel_run(self.servers, "install_image", *args, **kwargs)
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.clean()
 
-    def uninstall_image(self):
-        parallel_run(self.servers, "uninstall_image")
+    def prepare(self):
+        run_on_each(self.services, "prepare")
 
-    def clean(self, uninstall_image=True):
-        parallel_run(self.servers, "clean", uninstall_image=uninstall_image)
-        parallel_run(self.platforms, "clean")
+    def clean(self):
+        run_on_each(self.services, "clean")
+        run_on_each(self.platforms, "clean")
+
+    def start_workers(self, entry_points):
+        if self.workers:
+            run_on_each(self.services, "stop_workers")
+        self.workers = flatten_iterables(
+            *run_on_each(self.services, "start_workers", entry_points=entry_points))
 
     def map(self, func, *iterables):
         args_list = list(zip(*iterables))
-        workers = self.start_workers(func, len(args_list))
+        self.start_workers(func)
         results = []
         while args_list:
             current_results = []
-            for worker, args in zip(workers, args_list):
+            for worker, args in zip(self.workers, args_list):
                 current_results.append(worker.async_call(func, *args))
             args_list = args_list[len(current_results):]
             for proc in current_results:

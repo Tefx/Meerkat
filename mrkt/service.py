@@ -1,4 +1,5 @@
 from gevent.monkey import patch_all
+
 patch_all()
 import os
 import os.path
@@ -6,26 +7,37 @@ import paramiko
 import math
 import logging
 import json
+from gevent import sleep
 
-from . import engine
+from . import agent
+from .utils import set_option
 
-ENGINE_RUN_CMD = "mrkt-ng -p {in_port} {entry_points}"
+AGENT_RUN_CMD = "mrkt-agent -p {in_port} {entry_points}"
 DOCKER_RUN_CMD = "docker run -d -t --name {name} -p {out_port}:{in_port} {image} {engine_start_cmd}"
 DOCKER_RM_CMD = "docker rm -f {name}"
 DOCKER_INSTALL_IMAGE_CMD = "gunzip -c {image} | docker load && rm {image}"
 DOCKER_UNINSTALLL_IMAGE_CMD = "docker rmi {image}"
-DOCKER_CONTAINERS = "docker container ls --format \"{{json .}}\""
+#DOCKER_CONTAINERS = "docker container ls --format \"{{json .}}\""
+DOCKER_CONTAINERS = "docker ps --format \"{{json .}}\""
 DOCKER_IMAGES = "docker images --format \"{{json .}}\""
 
 
 class BaseService:
-    def __init__(self, addr, worker_limit=None, *args, **kwargs):
+    def __init__(self, addr, **options):
         self.addr = addr
-        self.worker_limit = worker_limit
-        self.image = None
         self.workers = []
-        self.other_args = args
-        self.other_kwargs = kwargs
+        self.update_options(options)
+
+    def update_options(self, options):
+        set_option(self, "worker_limit", None, options)
+        set_option(self, "image", None, options)
+        set_option(self, "image_archive", None, options)
+        set_option(self, "image_update", True, options)
+        set_option(self, "image_clean", True, options)
+
+    def prepare(self):
+        self.connect()
+        self.install_image()
 
     def connect(self):
         pass
@@ -34,64 +46,88 @@ class BaseService:
     def free_slot_number(self):
         return self.worker_limit - len(self.workers)
 
-    def install_image(self, image_name=None, local_path=None, update=True):
+    def install_image(self):
         raise NotImplementedError
 
     def uninstall_image(self):
         raise NotImplementedError
 
-    def start_workers(self, entry_points, num=None):
+    def start_workers(self, entry_points, num=math.inf):
+        raise NotImplementedError
+
+    def stop_workers(self):
         raise NotImplementedError
 
     def clean(self):
-        raise NotImplementedError
+        if self.workers:
+            self.stop_workers()
+        if self.image and self.image_clean:
+            self.uninstall_image()
 
 
 class DockerViaSSH(BaseService):
-    def __init__(self, *args, **kwargs):
-        super(DockerViaSSH, self).__init__(*args, **kwargs)
+    def __init__(self, addr, **options):
+        super(DockerViaSSH, self).__init__(addr, **options)
         self.ssh_client = None
         self.dockers = []
 
+    def update_options(self, options):
+        super(DockerViaSSH, self).update_options(options)
+        set_option(self, "ssh_options", {}, options)
+        set_option(self, "retry_ssh", 1, options)
+        set_option(self, "retry_ssh_interval", 0, options)
+
+    def try_ssh_connect(self):
+        ssh_client = paramiko.SSHClient()
+        ssh_client.load_system_host_keys()
+        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        times = 0
+        last_exception = None
+        while times < self.retry_ssh:
+            logging.info("[SSH]: [%s/%s] %s with %s", times+1, self.retry_ssh, self.addr, self.ssh_options)
+            try:
+                ssh_client.connect(self.addr, **self.ssh_options)
+                logging.info("[SSH]: %s connected", self.addr)
+                return ssh_client
+            except paramiko.ssh_exception.NoValidConnectionsError as e:
+                last_exception = e
+            times += 1
+            sleep(self.retry_ssh_interval)
+        raise last_exception
+
     def connect(self):
-        self.ssh_client = paramiko.SSHClient()
-        self.ssh_client.load_system_host_keys()
-        self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        self.ssh_client.connect(
-            self.addr, *self.other_args, **self.other_kwargs)
+        self.ssh_client = self.try_ssh_connect()
         if not self.worker_limit:
             self.worker_limit = int(self.ssh_exec("nproc"))
 
     def ssh_exec(self, cmd):
         logging.info("[EXEC]%s: %s", self.addr, cmd)
-        _, out, _ = self.ssh_client.exec_command(cmd)
+        _, out, err = self.ssh_client.exec_command(cmd)
         if out.channel.recv_exit_status() == 0:
             out = out.read().decode()
             logging.info("[ERET]%s: %s", self.addr, out)
             return out
         else:
             logging.critical("[EXEC]%s: %s", self.addr, cmd)
+            logging.critical("[EXEC]%s: %s", self.addr, err.read().decode())
+            return None
 
-    def install_image(self, image_name=None, local_path=None, update=True):
-        if self.image_exists(image_name):
-            if update:
-                self.kill_dockers(self.existing_dockers(image=image_name))
-                self.uninstall_image(image_name)
-            else:
-                self.image = image_name
+    def install_image(self):
+        if self.image_exists(self.image):
+            if self.image_update:
+                self.kill_dockers(self.existing_dockers(image=self.image))
+                self.uninstall_image(self.image)
                 return
-        if local_path:
+        if self.image_archive:
             sftp = paramiko.SFTPClient.from_transport(
                 self.ssh_client.get_transport())
-            file_name = os.path.basename(local_path)
-            sftp.put(local_path, os.path.join("", file_name))
+            file_name = os.path.basename(self.image_archive)
+            sftp.put(self.image_archive, os.path.join("", file_name))
             out = self.ssh_exec(
                 DOCKER_INSTALL_IMAGE_CMD.format(image=file_name))
             for line in out.splitlines():
                 if line.startswith("Loaded image:"):
                     self.image = line[13:].strip()
-        else:
-            self.image = image_name
 
     def uninstall_image(self, image=None):
         self.ssh_exec(DOCKER_UNINSTALLL_IMAGE_CMD.format(
@@ -114,14 +150,15 @@ class DockerViaSSH(BaseService):
         return dockers
 
     def kill_dockers(self, dockers=None):
-        self.ssh_exec(DOCKER_RM_CMD.format(
-            name=" ".join(dockers or self.dockers)))
+        dockers = dockers or self.dockers
+        if dockers:
+            self.ssh_exec(DOCKER_RM_CMD.format(name=" ".join(dockers)))
 
     def start_docker(self, entry_points, out_port):
         self.kill_dockers(self.existing_dockers(image=self.image))
-        port = engine.DEFAULT_PORT
+        port = agent.DEFAULT_PORT
         name = "mrkt_{}".format(out_port)
-        engine_start_cmd = ENGINE_RUN_CMD.format(
+        engine_start_cmd = AGENT_RUN_CMD.format(
             in_port=port, entry_points=entry_points)
         docker_start_cmd = DOCKER_RUN_CMD.format(
             name=name, image=self.image, engine_start_cmd=engine_start_cmd,
@@ -131,27 +168,25 @@ class DockerViaSSH(BaseService):
 
     def start_workers(self, entry_points, num=math.inf):
         if not isinstance(entry_points, str):
-            entry_points = engine.qualified_name(entry_points)
+            entry_points = agent.qualified_name(entry_points)
         num = min(self.free_slot_number, num)
-        self.dockers = [self.start_docker(entry_points, engine.DEFAULT_PORT)]
-        self.workers = [engine.Controller(
-            (self.addr, engine.DEFAULT_PORT)) for _ in range(num)]
+        self.dockers = [self.start_docker(entry_points, agent.DEFAULT_PORT)]
+        self.workers = [agent.Client(
+            (self.addr, agent.DEFAULT_PORT)) for _ in range(num)]
         return self.workers
 
-    def clean(self, uninstall_image=True):
+    def stop_workers(self):
         self.kill_dockers()
         self.workers = []
-        if uninstall_image:
-            self.uninstall_image()
 
 
 class MultiDockerViaSSH(DockerViaSSH):
     def start_workers(self, entry_points, num=math.inf):
         if not isinstance(entry_points, str):
-            entry_points = engine.qualified_name(entry_points)
+            entry_points = agent.qualified_name(entry_points)
         num = min(self.free_slot_number, num)
         while len(self.workers) < num:
-            out_port = engine.DEFAULT_PORT + len(self.dockers)
+            out_port = agent.DEFAULT_PORT + len(self.dockers)
             self.dockers.append(self.start_docker(entry_points, out_port))
-            self.workers.append(engine.Controller((self.addr, out_port)))
+            self.workers.append(agent.Client((self.addr, out_port)))
         return self.workers
