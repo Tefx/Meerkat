@@ -1,3 +1,5 @@
+from gevent.monkey import patch_thread
+patch_thread()
 import logging
 import os.path
 import sys

@@ -1,11 +1,8 @@
-from gevent.monkey import patch_socket
-patch_socket()
 import struct
 import inspect
 from json import loads as load, dumps as dump
-from gevent import socket, sleep
 import gevent
-import logging
+import gevent.socket
 
 
 HEADER_STRUCT = ">L"
@@ -55,15 +52,14 @@ def try_connect(sock, addr, times, intervals):
             sock.connect(addr)
             break
         except:
-            sleep(intervals)
+            gevent.sleep(intervals)
             times -= 1
     return times
 
 
 class Port:
-    def __init__(self, sock, reuse=False):
+    def __init__(self, sock):
         self._sock = sock
-        self.reuse = reuse
 
     def __del__(self):
         self._sock.close()
@@ -89,7 +85,7 @@ class Port:
         return safe_send(self._sock, msg)
 
     def close(self):
-        self._sock.shutdown(socket.SHUT_RDWR)
+        self._sock.shutdown(gevent.socket.SHUT_RDWR)
         self._sock.close()
 
     @property
@@ -98,15 +94,11 @@ class Port:
 
     @classmethod
     def create_listener(cls, port=0, pipe=None):
-        listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listen_sock = gevent.socket.socket(gevent.socket.AF_INET, gevent.socket.SOCK_STREAM)
         listen_sock.bind(("", port))
         listen_sock.listen(10000)
         if pipe:
             pipe.put(listen_sock.getsockname()[1])
-        else:
-            logging.info("Engine listens on port %s.",
-                         listen_sock.getsockname()[1])
         return cls(listen_sock)
 
     def accept(self):
@@ -114,28 +106,24 @@ class Port:
         return self.__class__(sock)
 
     @classmethod
-    def create_connector(cls, addr, reuse=True):
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        if reuse:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    def create_connector(cls, addr):
+        sock = gevent.socket.socket(gevent.socket.AF_INET, gevent.socket.SOCK_STREAM)
         if try_connect(sock, addr, 10, 1):
-            return cls(sock, reuse)
+            return cls(sock)
 
     def reconnect(self):
         addr = self._sock.getpeername()
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        if self.reuse:
-            self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock = gevent.socket.socket(gevent.socket.AF_INET, gevent.socket.SOCK_STREAM)
         self._sock.connect(addr)
 
 
 class RProc:
-    def __init__(self, func, func_name, port):
+    def __init__(self, addr, func, func_name):
         self.func = func
         self.func_name = func_name
-        self.port = port
-        self.rpid = None
+        self.port = Port.create_connector(addr)
         self.let = None
+        self.rpid = None
 
     def dump_args(self, args, kwargs):
         args = inspect.signature(self.func).bind(*args, **kwargs)
@@ -158,10 +146,9 @@ class RProc:
             self.port.reconnect()
             self.rpid = self.port.read()
             times -= 1
-            sleep(intervals)
+            gevent.sleep(intervals)
 
     def __call__(self, *args, **kwargs):
-        self.let = gevent.getcurrent()
         self.wait_for_server()
         kwargs = self.dump_args(args, kwargs)
         if self.port.write((self.func_name, kwargs)):
@@ -170,15 +157,10 @@ class RProc:
                 return self.load_ret(msg)
 
     def async_call(self, *args, **kwargs):
-        gevent.spawn(self, *args, ** kwargs)
+        self.let = gevent.spawn(self, *args, ** kwargs)
 
     def join(self):
-        self.wait_for_let()
         self.let.join()
-
-    def wait_for_let(self):
-        while self.let is None:
-            sleep(0.1)
 
     @property
     def value(self):

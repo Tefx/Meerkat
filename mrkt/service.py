@@ -12,8 +12,8 @@ from gevent import sleep
 from . import agent
 from .utils import set_option
 
-AGENT_RUN_CMD = "mrkt-agent -p {in_port} ."
-DOCKER_RUN_CMD = "docker run -d -t --name {name} -p {out_port}:{in_port} {image} {engine_start_cmd}"
+AGENT_RUN_CMD = "mrkt-agent -p {in_port} -l info ."
+DOCKER_RUN_CMD = "docker run -itd --name {name} -p {out_port}:{in_port} {image} {engine_start_cmd}"
 DOCKER_RM_CMD = "docker rm -f {name}"
 DOCKER_INSTALL_IMAGE_CMD = "gunzip -c {image} | docker load && rm {image}"
 DOCKER_UNINSTALLL_IMAGE_CMD = "docker rmi {image}"
@@ -104,7 +104,7 @@ class DockerViaSSH(BaseService):
         _, out, err = self.ssh_client.exec_command(cmd)
         if out.channel.recv_exit_status() == 0:
             out = out.read().decode()
-            logging.info("[ERET]%s: %s", self.addr, out)
+            logging.debug("[ERET]%s: %s", self.addr, out)
             return out
         else:
             logging.critical("[EXEC]%s: %s", self.addr, cmd)

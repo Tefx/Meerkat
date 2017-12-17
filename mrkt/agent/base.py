@@ -1,13 +1,16 @@
 import inspect
-import os
+# import os
 import os.path
 import logging
-import signal
+# import signal
 import gevent
+from multiprocessing import Process
+from uuid import uuid1
 
 from .rpc import Port, RProc
 
 DEFAULT_PORT = 8333
+PROCESS_CLEAN_INTERVAL = 5
 
 
 def get_module_name(obj):
@@ -35,9 +38,10 @@ def index_split(index):
 
 class Agent:
     def __init__(self):
-        self.current_port = None
+        self.port = None
         self.function_store = {}
         self.register_adm_functions()
+        self.processes = {}
 
     def register(self, func, index=None):
         index = index or function_index(func)
@@ -54,88 +58,86 @@ class Agent:
         return self.function_store[index]
 
     def _adm_hello(self):
-        return "Hello, {}:{}!".format(*self.current_port.peer_name)
+        return "Hello, {}:{}!".format(*self.port.peer_name)
 
     @staticmethod
-    def _adm_suspend(pid):
-        os.kill(pid, signal.SIGSTOP)
+    def _adm_cpu_count():
+        return os.cpu_count()
 
-    @staticmethod
-    def _adm_resume(pid):
-        os.kill(pid, signal.SIGCONT)
+    # def _adm_suspend(self, uuid):
+    #     p = self.processes.get(uuid, None)
+    #     if p:
+    #         os.kill(p.pid, signal.SIGSTOP)
+    #
+    # def _adm_resume(self, uuid):
+    #     p = self.processes.get(uuid, None)
+    #     if p:
+    #         os.kill(p.pid, signal.SIGCONT)
 
     def _adm_list(self):
         return list(self.function_store.keys())
 
-    def invoke(self, func, kwargs):
+    def invoke(self, port, func, kwargs):
+        self.port = port
         for name, arg in kwargs.items():
             var_cls = func.__annotations__.get(name, None)
             if hasattr(var_cls, "__load__"):
                 kwargs[name] = var_cls.__load__(arg)
         res = func(**kwargs)
+        logging.info("[%s.Invoke]: %s", self.__class__.__name__, res)
         if hasattr(res, "__dump__"):
             res = res.__dump__()
-        return res
+        port.write(res)
 
     def run(self, port=0, pipe=None):
         logging.info("[%s] stated on %s", self.__class__.__name__, port)
         listener = Port.create_listener(port, pipe)
+        gevent.spawn(self.pool_cleaner)
         while True:
             port = listener.accept()
-            logging.info("[Request]: %s", port)
             gevent.spawn(self.request_handler, port)
 
-    def request_handler(self, port):
+    def pool_cleaner(self):
         while True:
-            self.current_port = port
-            port.write(os.getpid())
-            message = port.read()
-            if message:
-                index, kwargs = message
-                func = self.look_up_function(index)
-                logging.info("[%s.Call]: %s on %s",
-                             self.__class__.__name__, index, kwargs)
-                port.write(self.invoke(func, kwargs))
-            else:
-                break
+            self.processes = {uuid: p for uuid, p in self.processes.items() if p.is_alive()}
+            logging.info("[%s.Cleaner]: remaining %s tasks", self.__class__.__name__, len(self.processes))
+            gevent.sleep(PROCESS_CLEAN_INTERVAL)
+
+    def request_handler(self, port):
+        logging.info("[Request]: %s", port)
+        uuid = uuid1().int
+        port.write(uuid)
+        message = port.read()
+        if message:
+            index, kwargs = message
+            func = self.look_up_function(index)
+            logging.info("[%s.Call]: %s on %s",
+                         self.__class__.__name__, index, kwargs)
+            p = Process(target=self.invoke, args=(port, func, kwargs))
+            p.start()
+            self.processes[uuid] = p
+            # self.invoke(port, func, kwargs)
+        else:
+            logging.CRITICAL("[%s.Call]: cannot receive request!", self.__class__.__name__)
 
 
 class Client:
-    def __init__(self, agent_addr, keep_alive=False):
-        self.keep_alive = keep_alive
+    def __init__(self, agent_addr):
         self.agent_addr = agent_addr
-        self.running_set = []
-        self.port = None
-        if keep_alive:
-            self.port = Port.create_connector(agent_addr, True)
-        else:
-            self.port = None
-
-    def shutdown(self):
-        if self.port:
-            self.port.close()
-            self.port = None
-
-    def get_port(self, new_port=False):
-        if not self.port or new_port:
-            return Port.create_connector(self.agent_addr, False)
-        return self.port
 
     def call(self, func, *args, **kwargs):
-        port = self.get_port()
         func_name = function_index(func)
-        return RProc(func, func_name, port)(*args, **kwargs)
+        return RProc(self.agent_addr, func, func_name)(*args, **kwargs)
 
     def async_call(self, func, *args, **kwargs):
-        port = self.get_port()
         func_name = function_index(func)
-        proc = RProc(func, func_name, port)
+        proc = RProc(self.agent_addr, func, func_name)
         proc.async_call(*args, **kwargs)
         return proc
 
     def __getattr__(self, name):
         index = "_adm_{}".format(name)
-        return RProc(getattr(Agent(), index), index, self.get_port())
+        return RProc(self.agent_addr, getattr(Agent(), index), index)
 
     def __repr__(self):
         return "Client[{}]".format(self.agent_addr)

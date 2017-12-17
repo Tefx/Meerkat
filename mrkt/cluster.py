@@ -37,11 +37,11 @@ class Cluster:
         args_list = list(zip(*iterables))
         results = []
         while args_list:
-            current_results = []
+            procs = []
             for worker, args in zip(self.workers, args_list):
-                current_results.append(worker.async_call(func, *args))
-            args_list = args_list[len(current_results):]
-            for proc in current_results:
+                procs.append(worker.async_call(func, *args))
+            args_list = args_list[len(procs):]
+            for proc in procs:
                 proc.join()
                 results.append(proc.value)
         return results
