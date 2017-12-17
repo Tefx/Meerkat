@@ -5,13 +5,21 @@ import boto3
 import gevent
 import logging
 from .base import BasePlatform
+import urllib.request
+
+COREOS_AMI_URL = "https://stable.release.core-os.net/amd64-usr/current/coreos_production_ami_hvm_{region}.txt"
+
+
+def fetch_coreos_ami(region):
+    url = COREOS_AMI_URL.format(region=region)
+    return urllib.request.urlopen(url).read().decode().strip()
 
 
 class EC2(BasePlatform):
     def __init__(self, service_cls, service_num,
                  sgroup, keyname, keyfile,
                  vm_type="t2.micro",
-                 ami="ami-25632346", username="core",
+                 ami=None, username="core",
                  pgroup=None, region="ap-southeast-1",
                  clean_action="stop"):
         super().__init__(service_cls, service_num)
@@ -20,7 +28,7 @@ class EC2(BasePlatform):
         self.keyname = keyname
         self.keyfile = keyfile
         self.vm_type = vm_type
-        self.ami = ami
+        self.ami = ami or fetch_coreos_ami(region)
         if not vm_type.startswith("t2.") or pgroup:
             self.placement = {"GroupName": pgroup}
         else:

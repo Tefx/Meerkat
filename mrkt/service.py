@@ -12,14 +12,13 @@ from gevent import sleep
 from . import agent
 from .utils import set_option
 
-AGENT_RUN_CMD = "mrkt-agent -p {in_port} {entry_points}"
+AGENT_RUN_CMD = "mrkt-agent -p {in_port} ."
 DOCKER_RUN_CMD = "docker run -d -t --name {name} -p {out_port}:{in_port} {image} {engine_start_cmd}"
 DOCKER_RM_CMD = "docker rm -f {name}"
 DOCKER_INSTALL_IMAGE_CMD = "gunzip -c {image} | docker load && rm {image}"
 DOCKER_UNINSTALLL_IMAGE_CMD = "docker rmi {image}"
-#DOCKER_CONTAINERS = "docker container ls --format \"{{json .}}\""
-DOCKER_CONTAINERS = "docker ps --format \"{{json .}}\""
-DOCKER_IMAGES = "docker images --format \"{{json .}}\""
+DOCKER_CONTAINERS = "docker container ls --format \"{{json .}}\""
+DOCKER_IMAGES = "docker images --format \"{{json .Repository}}\""
 
 
 class BaseService:
@@ -52,7 +51,7 @@ class BaseService:
     def uninstall_image(self):
         raise NotImplementedError
 
-    def start_workers(self, entry_points, num=math.inf):
+    def start_workers(self, num=math.inf):
         raise NotImplementedError
 
     def stop_workers(self):
@@ -84,7 +83,7 @@ class DockerViaSSH(BaseService):
         times = 0
         last_exception = None
         while times < self.retry_ssh:
-            logging.info("[SSH]: [%s/%s] %s with %s", times+1, self.retry_ssh, self.addr, self.ssh_options)
+            logging.info("[SSH]: [%s/%s] %s with %s", times + 1, self.retry_ssh, self.addr, self.ssh_options)
             try:
                 ssh_client.connect(self.addr, **self.ssh_options)
                 logging.info("[SSH]: %s connected", self.addr)
@@ -113,11 +112,14 @@ class DockerViaSSH(BaseService):
             return None
 
     def install_image(self):
-        if self.image_exists(self.image):
-            if self.image_update:
-                self.kill_dockers(self.existing_dockers(image=self.image))
-                self.uninstall_image(self.image)
+        if not self.image_update:
+            image = self.image or os.path.basename(self.image_archive).split(".")[0]
+            if self.image_exists(image or self.image):
+                self.image = image
                 return
+        if self.image and self.image_exists(self.image):
+            self.kill_dockers(self.existing_dockers(image=self.image))
+            self.uninstall_image(self.image)
         if self.image_archive:
             sftp = paramiko.SFTPClient.from_transport(
                 self.ssh_client.get_transport())
@@ -137,7 +139,7 @@ class DockerViaSSH(BaseService):
     def image_exists(self, name):
         for line in self.ssh_exec(DOCKER_IMAGES).splitlines():
             image = json.loads(line)
-            if name == image["Repository"] or name == image["Repository"]:
+            if image.startswith(name):
                 return True
         return False
 
@@ -154,25 +156,21 @@ class DockerViaSSH(BaseService):
         if dockers:
             self.ssh_exec(DOCKER_RM_CMD.format(name=" ".join(dockers)))
 
-    def start_docker(self, entry_points, out_port):
+    def start_docker(self, out_port):
         self.kill_dockers(self.existing_dockers(image=self.image))
         port = agent.DEFAULT_PORT
         name = "mrkt_{}".format(out_port)
-        engine_start_cmd = AGENT_RUN_CMD.format(
-            in_port=port, entry_points=entry_points)
+        engine_start_cmd = AGENT_RUN_CMD.format(in_port=port)
         docker_start_cmd = DOCKER_RUN_CMD.format(
             name=name, image=self.image, engine_start_cmd=engine_start_cmd,
             in_port=port, out_port=out_port)
         if self.ssh_exec(docker_start_cmd) != None:
             return name
 
-    def start_workers(self, entry_points, num=math.inf):
-        if not isinstance(entry_points, str):
-            entry_points = agent.qualified_name(entry_points)
+    def start_workers(self, num=math.inf):
         num = min(self.free_slot_number, num)
-        self.dockers = [self.start_docker(entry_points, agent.DEFAULT_PORT)]
-        self.workers = [agent.Client(
-            (self.addr, agent.DEFAULT_PORT)) for _ in range(num)]
+        self.dockers = [self.start_docker(agent.DEFAULT_PORT)]
+        self.workers = [agent.Client((self.addr, agent.DEFAULT_PORT)) for _ in range(num)]
         return self.workers
 
     def stop_workers(self):
@@ -181,12 +179,10 @@ class DockerViaSSH(BaseService):
 
 
 class MultiDockerViaSSH(DockerViaSSH):
-    def start_workers(self, entry_points, num=math.inf):
-        if not isinstance(entry_points, str):
-            entry_points = agent.qualified_name(entry_points)
+    def start_workers(self, num=math.inf):
         num = min(self.free_slot_number, num)
         while len(self.workers) < num:
             out_port = agent.DEFAULT_PORT + len(self.dockers)
-            self.dockers.append(self.start_docker(entry_points, out_port))
+            self.dockers.append(self.start_docker(out_port))
             self.workers.append(agent.Client((self.addr, out_port)))
         return self.workers

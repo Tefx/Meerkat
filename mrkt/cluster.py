@@ -21,20 +21,20 @@ class Cluster:
 
     def prepare(self):
         run_on_each(self.services, "prepare")
+        self.start_workers()
 
     def clean(self):
         run_on_each(self.services, "clean")
         run_on_each(self.platforms, "clean")
 
-    def start_workers(self, entry_points):
+    def start_workers(self):
         if self.workers:
             run_on_each(self.services, "stop_workers")
         self.workers = flatten_iterables(
-            *run_on_each(self.services, "start_workers", entry_points=entry_points))
+            *run_on_each(self.services, "start_workers"))
 
     def map(self, func, *iterables):
         args_list = list(zip(*iterables))
-        self.start_workers(func)
         results = []
         while args_list:
             current_results = []

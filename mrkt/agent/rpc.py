@@ -1,5 +1,5 @@
-from gevent.monkey import patch_all
-patch_all()
+from gevent.monkey import patch_socket
+patch_socket()
 import struct
 import inspect
 from json import loads as load, dumps as dump
