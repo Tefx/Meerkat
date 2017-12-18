@@ -5,7 +5,7 @@ setup(name="mrkt",
       author="tefx",
       packages=["mrkt", "mrkt.platform", "mrkt.agent"],
       include_package_data=True,
-      install_requires=["gevent"],
+      install_requires=["gevent", "dill"],
       extras_require={
           'ssh': ["paramiko"],
           'AWS': ["boto3"],

@@ -6,11 +6,26 @@ import logging
 import gevent
 from multiprocessing import Process
 from uuid import uuid1
+import traceback
 
-from .rpc import Port, RProc
+from .rpc import Port
 
 DEFAULT_PORT = 8333
 PROCESS_CLEAN_INTERVAL = 5
+
+
+class TaskFailure(Exception):
+    pass
+
+
+class CatchException:
+    def __init__(self, exc):
+        self.exc = exc
+        self.tb = traceback.format_exc()
+
+    def re_raise(self):
+        print(self.tb)
+        raise TaskFailure() from self.exc
 
 
 def get_module_name(obj):
@@ -83,7 +98,10 @@ class Agent:
             var_cls = func.__annotations__.get(name, None)
             if hasattr(var_cls, "__load__"):
                 kwargs[name] = var_cls.__load__(arg)
-        res = func(**kwargs)
+        try:
+            res = func(**kwargs)
+        except Exception as e:
+            res = CatchException(e)
         logging.info("[%s.Invoke]: %s", self.__class__.__name__, res)
         if hasattr(res, "__dump__"):
             res = res.__dump__()
@@ -141,3 +159,57 @@ class Client:
 
     def __repr__(self):
         return "Client[{}]".format(self.agent_addr)
+
+
+class RProc:
+    def __init__(self, addr, func, func_name):
+        self.func = func
+        self.func_name = func_name
+        self.port = Port.create_connector(addr)
+        self.let = None
+        self.rpid = None
+
+    def dump_args(self, args, kwargs):
+        args = inspect.signature(self.func).bind(*args, **kwargs)
+        args.apply_defaults()
+        kwargs = args.arguments
+        for name, arg in kwargs.items():
+            if hasattr(arg, "__dump__"):
+                kwargs[name] = arg.__dump__()
+        return kwargs
+
+    def load_ret(self, ret):
+        ret_cls = self.func.__annotations__.get("return")
+        if ret_cls:
+            ret = ret_cls.__load__(ret)
+        return ret
+
+    def wait_for_server(self, times=5, intervals=0.5):
+        self.rpid = self.port.read()
+        while not self.rpid and times:
+            self.port.reconnect()
+            self.rpid = self.port.read()
+            times -= 1
+            gevent.sleep(intervals)
+
+    def __call__(self, *args, **kwargs):
+        self.wait_for_server()
+        kwargs = self.dump_args(args, kwargs)
+        if self.port.write((self.func_name, kwargs)):
+            msg = self.port.read()
+            if msg != None:
+                ret = self.load_ret(msg)
+                if isinstance(ret, CatchException):
+                    ret.re_raise()
+                else:
+                    return ret
+
+    def async_call(self, *args, **kwargs):
+        self.let = gevent.spawn(self, *args, **kwargs)
+
+    def join(self):
+        self.let.join()
+
+    @property
+    def value(self):
+        return self.let.value

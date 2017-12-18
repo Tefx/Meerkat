@@ -1,6 +1,5 @@
 import struct
-import inspect
-from json import loads as load, dumps as dump
+from dill import loads as load, dumps as dump
 import gevent
 import gevent.socket
 
@@ -76,11 +75,14 @@ class Port:
                 return False
             chunks.append(recv)
             length -= len(recv)
-        buf = b"".join(chunks).decode("utf-8")
+        # buf = b"".join(chunks).decode("utf-8")
+        buf = b"".join(chunks)
         return load(buf)
 
     def write(self, buf):
-        buf = dump(buf).encode("utf-8")
+        buf = dump(buf)
+        if not isinstance(buf, bytes):
+            buf = buf.encode("utf-8")
         msg = struct.pack(HEADER_STRUCT, len(buf)) + buf
         return safe_send(self._sock, msg)
 
@@ -115,53 +117,3 @@ class Port:
         addr = self._sock.getpeername()
         self._sock = gevent.socket.socket(gevent.socket.AF_INET, gevent.socket.SOCK_STREAM)
         self._sock.connect(addr)
-
-
-class RProc:
-    def __init__(self, addr, func, func_name):
-        self.func = func
-        self.func_name = func_name
-        self.port = Port.create_connector(addr)
-        self.let = None
-        self.rpid = None
-
-    def dump_args(self, args, kwargs):
-        args = inspect.signature(self.func).bind(*args, **kwargs)
-        args.apply_defaults()
-        kwargs = args.arguments
-        for name, arg in kwargs.items():
-            if hasattr(arg, "__dump__"):
-                kwargs[name] = arg.__dump__()
-        return kwargs
-
-    def load_ret(self, ret):
-        ret_cls = self.func.__annotations__.get("return")
-        if ret_cls:
-            ret = ret_cls.__load__(ret)
-        return ret
-
-    def wait_for_server(self, times=5, intervals=0.5):
-        self.rpid = self.port.read()
-        while not self.rpid and times:
-            self.port.reconnect()
-            self.rpid = self.port.read()
-            times -= 1
-            gevent.sleep(intervals)
-
-    def __call__(self, *args, **kwargs):
-        self.wait_for_server()
-        kwargs = self.dump_args(args, kwargs)
-        if self.port.write((self.func_name, kwargs)):
-            msg = self.port.read()
-            if msg != None:
-                return self.load_ret(msg)
-
-    def async_call(self, *args, **kwargs):
-        self.let = gevent.spawn(self, *args, ** kwargs)
-
-    def join(self):
-        self.let.join()
-
-    @property
-    def value(self):
-        return self.let.value
