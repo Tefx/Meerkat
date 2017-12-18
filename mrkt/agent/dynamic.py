@@ -1,10 +1,10 @@
 from gevent.monkey import patch_thread
 patch_thread()
-import logging
 import os.path
 import sys
 import importlib
 import argparse
+import logging
 from .base import Agent, index_split, DEFAULT_PORT
 
 

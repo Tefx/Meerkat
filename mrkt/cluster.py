@@ -1,3 +1,4 @@
+from .agent import Client
 from .service import BaseService
 from .platform.base import BasePlatform
 from .utils import flatten_iterables, run_on_each
@@ -33,15 +34,19 @@ class Cluster:
         self.workers = flatten_iterables(
             *run_on_each(self.services, "start_workers"))
 
-    def map(self, func, *iterables):
+    def submit(self, func, *args, **kwargs):
+        worker = min(self.workers, key=Client.remaining_slot_num)
+        return worker.async_call(func, *args, **kwargs)
+
+    def async_map(self, func, *iterables):
         args_list = list(zip(*iterables))
-        results = []
-        while args_list:
-            procs = []
-            for worker, args in zip(self.workers, args_list):
-                procs.append(worker.async_call(func, *args))
-            args_list = args_list[len(procs):]
-            for proc in procs:
-                proc.join()
-                results.append(proc.value)
-        return results
+        return [self.submit(func, *args) for args in args_list]
+
+    def joinall(self, procs):
+        for proc in procs:
+            proc.join()
+
+    def map(self, func, *iterables):
+        procs = self.async_map(func, *iterables)
+        self.joinall(procs)
+        return [p.value for p in procs]

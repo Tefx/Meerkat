@@ -1,10 +1,9 @@
+from threading import current_thread
 from gevent.monkey import patch_all
-
-patch_all()
+patch_all(thread=current_thread().name == "MainThread")
 import os
 import os.path
 import paramiko
-import math
 import logging
 import json
 from gevent import sleep
@@ -12,7 +11,7 @@ from gevent import sleep
 from . import agent
 from .utils import set_option
 
-AGENT_RUN_CMD = "mrkt-agent -p {in_port} -l info ."
+AGENT_RUN_CMD = "mrkt-agent -p {in_port} -l debug ."
 DOCKER_RUN_CMD = "docker run -itd --name {name} -p {out_port}:{in_port} {image} {engine_start_cmd}"
 DOCKER_RM_CMD = "docker rm -f {name}"
 DOCKER_INSTALL_IMAGE_CMD = "gunzip -c {image} | docker load && rm {image}"
@@ -28,7 +27,6 @@ class BaseService:
         self.update_options(options)
 
     def update_options(self, options):
-        set_option(self, "worker_limit", None, options)
         set_option(self, "image", None, options)
         set_option(self, "image_archive", None, options)
         set_option(self, "image_update", True, options)
@@ -41,17 +39,13 @@ class BaseService:
     def connect(self):
         pass
 
-    @property
-    def free_slot_number(self):
-        return self.worker_limit - len(self.workers)
-
     def install_image(self):
         raise NotImplementedError
 
     def uninstall_image(self):
         raise NotImplementedError
 
-    def start_workers(self, num=math.inf):
+    def start_workers(self, num=1):
         raise NotImplementedError
 
     def stop_workers(self):
@@ -96,8 +90,6 @@ class DockerViaSSH(BaseService):
 
     def connect(self):
         self.ssh_client = self.try_ssh_connect()
-        if not self.worker_limit:
-            self.worker_limit = int(self.ssh_exec("nproc"))
 
     def ssh_exec(self, cmd):
         logging.info("[EXEC]%s: %s", self.addr, cmd)
@@ -167,8 +159,7 @@ class DockerViaSSH(BaseService):
         if self.ssh_exec(docker_start_cmd) != None:
             return name
 
-    def start_workers(self, num=math.inf):
-        num = min(self.free_slot_number, num)
+    def start_workers(self, num=1):
         self.dockers = [self.start_docker(agent.DEFAULT_PORT)]
         self.workers = [agent.Client((self.addr, agent.DEFAULT_PORT)) for _ in range(num)]
         return self.workers
@@ -176,13 +167,3 @@ class DockerViaSSH(BaseService):
     def stop_workers(self):
         self.kill_dockers()
         self.workers = []
-
-
-class MultiDockerViaSSH(DockerViaSSH):
-    def start_workers(self, num=math.inf):
-        num = min(self.free_slot_number, num)
-        while len(self.workers) < num:
-            out_port = agent.DEFAULT_PORT + len(self.dockers)
-            self.dockers.append(self.start_docker(out_port))
-            self.workers.append(agent.Client((self.addr, out_port)))
-        return self.workers
