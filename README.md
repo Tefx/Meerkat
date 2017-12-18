@@ -1,7 +1,7 @@
 # meerkat
 Using Dockers to parallelize python programs
 
-#Example
+# Example
 
 ```
 from mrkt.cluster import Cluster
