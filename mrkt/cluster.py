@@ -35,7 +35,7 @@ class Cluster:
             *run_on_each(self.services, "start_workers"))
 
     def submit(self, func, *args, **kwargs):
-        worker = min(self.workers, key=Client.remaining_slot_num)
+        worker = max(self.workers, key=Client.idle_ratio)
         return worker.async_call(func, *args, **kwargs)
 
     def async_map(self, func, *iterables):

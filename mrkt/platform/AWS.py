@@ -1,5 +1,6 @@
 from threading import current_thread
 from gevent.monkey import patch_all
+
 patch_all(thread=current_thread().name == "MainThread")
 import boto3
 import gevent

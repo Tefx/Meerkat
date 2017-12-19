@@ -1,5 +1,6 @@
 from threading import current_thread
 from gevent.monkey import patch_all
+
 patch_all(thread=current_thread().name == "MainThread")
 import os
 import os.path
@@ -11,10 +12,11 @@ from gevent import sleep
 from . import agent
 from .utils import set_option
 
-AGENT_RUN_CMD = "mrkt-agent -p {in_port} -l debug ."
-DOCKER_RUN_CMD = "docker run -itd --name {name} -p {out_port}:{in_port} {image} {engine_start_cmd}"
+AGENT_RUN_CMD = "mrkt-agent -p {in_port} ."
+DOCKER_RUN_CMD = "docker run -d --name {name} -p {out_port}:{in_port} {image} {engine_start_cmd}"
 DOCKER_RM_CMD = "docker rm -f {name}"
 DOCKER_INSTALL_IMAGE_CMD = "gunzip -c {image} | docker load && rm {image}"
+DOCKER_UPDATE_IMAGE_CMD = "docker pull {image}"
 DOCKER_UNINSTALLL_IMAGE_CMD = "docker rmi {image}"
 DOCKER_CONTAINERS = "docker container ls --format \"{{json .}}\""
 DOCKER_IMAGES = "docker images --format \"{{json .Repository}}\""
@@ -106,12 +108,13 @@ class DockerViaSSH(BaseService):
     def install_image(self):
         if not self.image_update:
             image = self.image or os.path.basename(self.image_archive).split(".")[0]
-            if self.image_exists(image or self.image):
+            if self.image_exists(image):
                 self.image = image
                 return
-        if self.image and self.image_exists(self.image):
-            self.kill_dockers(self.existing_dockers(image=self.image))
-            self.uninstall_image(self.image)
+        # if self.image and self.image_exists(self.image) and self.image_update:
+        #     image = self.image
+        #     self.kill_dockers(self.existing_dockers(image=self.image))
+        #     self.uninstall_image(self.image)
         if self.image_archive:
             sftp = paramiko.SFTPClient.from_transport(
                 self.ssh_client.get_transport())
@@ -122,6 +125,8 @@ class DockerViaSSH(BaseService):
             for line in out.splitlines():
                 if line.startswith("Loaded image:"):
                     self.image = line[13:].strip()
+        else:
+            self.ssh_exec(DOCKER_UPDATE_IMAGE_CMD.format(image=self.image))
 
     def uninstall_image(self, image=None):
         self.ssh_exec(DOCKER_UNINSTALLL_IMAGE_CMD.format(
@@ -131,7 +136,9 @@ class DockerViaSSH(BaseService):
     def image_exists(self, name):
         for line in self.ssh_exec(DOCKER_IMAGES).splitlines():
             image = json.loads(line)
-            if image.startswith(name):
+            if ":" not in name: name += ":latest"
+            if ":" not in image: image += ":latest"
+            if name == image:
                 return True
         return False
 

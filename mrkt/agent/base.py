@@ -61,7 +61,7 @@ class Agent:
 
     def register(self, func, index=None):
         index = index or function_index(func)
-        logging.info("[%s.LoadIntoCache]: %s", self.__class__.__name__, index)
+        logging.debug("[%s.LoadIntoCache]: %s", self.__class__.__name__, index)
         self.function_store[index] = func
         return func
 
@@ -148,27 +148,28 @@ class Client:
         self.ptask_lim = parallel_task_limit or self.cpu_count()
         self.ptask_semaphore = BoundedSemaphore(self.ptask_lim)
 
-    def remaining_slot_num(self):
-        return self.ptask_lim - len(self.running_tasks)
+    def idle_ratio(self):
+        return 1 - len(self.running_tasks)/self.ptask_lim
 
     def on_start_task(self, proc):
+        self.running_tasks.add(proc)
         if hasattr(self, "ptask_semaphore"):
             self.ptask_semaphore.acquire()
-        self.running_tasks.add(proc)
 
     def on_finish_task(self, proc):
-        self.running_tasks.remove(proc)
         if hasattr(self, "ptask_semaphore"):
             self.ptask_semaphore.release()
+        self.running_tasks.remove(proc)
 
     def on_fail_task(self, proc):
-        self.running_tasks.remove(proc)
         if hasattr(self, "ptask_semaphore"):
             self.ptask_semaphore.release()
+        self.running_tasks.remove(proc)
 
     def call(self, func, *args, **kwargs):
-        func_name = function_index(func)
-        return RProc(self.agent_addr, func, func_name, self)(*args, **kwargs)
+        proc = self.async_call(func, *args, **kwargs)
+        proc.join()
+        return proc.value
 
     def async_call(self, func, *args, **kwargs):
         func_name = function_index(func)
@@ -189,7 +190,8 @@ class RProc:
         self.func = func
         self.func_name = func_name
         self.worker = worker
-        self.port = Port.create_connector(addr)
+        self.addr = addr
+        self.port = None
         self.let = None
         self.rpid = None
 
@@ -216,9 +218,9 @@ class RProc:
             times -= 1
             gevent.sleep(intervals)
 
-    def __call__(self, *args, **kwargs):
+    def process(self, *args, **kwargs):
+        self.port = Port.create_connector(self.addr)
         self.wait_for_server()
-        self.worker.on_start_task(self)
         kwargs = self.dump_args(args, kwargs)
         if self.port.write((self.func_name, kwargs)):
             msg = self.port.read()
@@ -226,14 +228,23 @@ class RProc:
                 ret = self.load_ret(msg)
                 if isinstance(ret, CatchException):
                     self.worker.on_fail_task(self)
+                    self.port.close()
                     ret.re_raise()
                 else:
+                    self.port.close()
                     self.worker.on_finish_task(self)
                     return ret
+        self.port.close()
         self.worker.on_fail_task(self)
 
+    def __call__(self, *args, **kwargs):
+        self.async_call(*args, **kwargs)
+        self.join()
+        return self.value
+
     def async_call(self, *args, **kwargs):
-        self.let = gevent.spawn(self, *args, **kwargs)
+        self.worker.on_start_task(self)
+        self.let = gevent.spawn(self.process, *args, **kwargs)
 
     def join(self):
         self.let.join()
