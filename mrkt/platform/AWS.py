@@ -30,7 +30,7 @@ class EC2(BasePlatform):
         self.keyfile = keyfile
         self.vm_type = vm_type
         self.ami = ami or fetch_coreos_ami(region)
-        if not vm_type.startswith("t2.") or pgroup:
+        if pgroup:
             self.placement = {"GroupName": pgroup}
         else:
             self.placement = {}
