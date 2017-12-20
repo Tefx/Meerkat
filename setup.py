@@ -11,5 +11,5 @@ setup(name="mrkt",
           'AWS': ["boto3"],
       },
       entry_points=dict(
-          console_scripts=["mrkt-agent=mrkt.agent.dynamic:DynamicAgent.launch",
+          console_scripts=["mrkt-agent=mrkt.agent.agent:DynamicAgent.launch",
                            "mrkt-pack=mrkt.tools:pack_docker"]))

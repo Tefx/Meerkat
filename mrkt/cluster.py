@@ -1,4 +1,4 @@
-from .agent import Worker
+from mrkt.agent import Worker
 from .service import BaseService
 from .platform.base import BasePlatform
 from .utils import flatten_iterables, run_on_each
@@ -34,6 +34,10 @@ class Cluster:
             run_on_each(self.services, "stop_workers")
         self.workers = flatten_iterables(
             *run_on_each(self.services, "start_workers"))
+
+    def sync_dir(self, path):
+        delta = self.workers[0].sync_dir_delta(path)
+        run_on_each(self.workers, "sync_dir_patch", delta=delta)
 
     def submit(self, func, *args, **kwargs):
         for worker in self.workers:

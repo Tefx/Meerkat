@@ -1,15 +1,22 @@
+from gevent.monkey import patch_thread
+
+patch_thread()
+import argparse
+import importlib
 import inspect
 import os
 import os.path
 import logging
 import signal
+import sys
+
 import gevent
 from multiprocessing import Process
 from uuid import uuid1
 import traceback
-from gevent.lock import BoundedSemaphore
 
 from .rpc import Port
+from .rdiff import dir_sig, dir_patch
 
 DEFAULT_PORT = 8333
 PROCESS_CLEAN_INTERVAL = 5
@@ -133,131 +140,59 @@ class Agent:
             func = self.look_up_function(index)
             logging.info("[%s.Call]: %s on %s",
                          self.__class__.__name__, index, kwargs)
-            p = Process(target=self.invoke, args=(port, func, kwargs))
-            setattr(p, "task", (index, func, kwargs))
-            p.start()
-            self.processes[uuid] = p
+            if not index.startswith("_adm_"):
+                p = Process(target=self.invoke, args=(port, func, kwargs))
+                setattr(p, "task", (index, func, kwargs))
+                p.start()
+                self.processes[uuid] = p
+            else:
+                self.invoke(port, func, kwargs)
         else:
             logging.CRITICAL("[%s.Call]: cannot receive request!", self.__class__.__name__)
 
 
-NULL_AGENT = Agent()
-TASK_STATE_INIT= 0
-TASK_STATE_READY = 1
-TASK_STATE_RUNNING = 2
-TASK_STATE_SUCCESS = 3
-TASK_STATE_FAIL = 4
+class DynamicAgent(Agent):
+    def __init__(self, path=None):
+        super(DynamicAgent, self).__init__()
+        self.module_cache = {}
+        if path:
+            self.path = os.path.abspath(path)
+            self.setup_path(path)
 
+    def setup_path(self, path):
+        sys.path.insert(1, os.path.abspath(path))
 
-class Worker:
-    def __init__(self, agent_addr, parallel_task_limit=None):
-        self.agent_addr = agent_addr
-        self.tasks = set()
-        self.capacity = parallel_task_limit or self.cpu_count()
-        self.ptask_semaphore = BoundedSemaphore(self.capacity)
+    def look_up_function(self, index):
+        if index not in self.function_store:
+            module_name, func_name = index_split(index)
+            if module_name not in self.module_cache:
+                self.module_cache[module_name] = importlib.import_module(
+                    module_name)
+            func = getattr(self.module_cache[module_name], func_name)
+            self.register(func, index)
+        return self.function_store[index]
 
-    def utilization(self):
-        return len(self.tasks) / self.capacity
+    def _adm_dir_signature(self):
+        return dir_sig(self.path)
 
-    def wait_until_idle(self):
-        if hasattr(self, "ptask_semaphore"):
-            self.ptask_semaphore.acquire()
+    def _adm_dir_patch(self, delta):
+        return dir_patch(self.path, delta)
 
-    def on_finish_task(self, task):
-        self.tasks.remove(task)
-        task.clean()
-        if hasattr(self, "ptask_semaphore"):
-            self.ptask_semaphore.release()
+    def _adm_clean_cache(self):
+        for module_name, module in list(self.module_cache.items()):
+            self.module_cache[module_name] = importlib.reload(module)
+        self.function_store = {}
+        self.register_adm_functions()
 
-    def make_task(self, func):
-        func_name = function_index(func)
-        return Task(self.agent_addr, func, func_name, self)
-
-    def exec(self, func, *args, **kwargs):
-        task = self.make_task(func)
-        return task(*args, **kwargs)
-
-    def async_exec(self, func, *args, **kwargs):
-        task = self.make_task(func)
-        task.start(*args, **kwargs)
-        return task
-
-    def __getattr__(self, name):
-        index = "_adm_{}".format(name)
-        return Task(self.agent_addr, getattr(NULL_AGENT, index), index, self)
-
-    def __repr__(self):
-        return "Client[{}]".format(self.agent_addr)
-
-
-class Task:
-    def __init__(self, addr, func, func_name, worker):
-        self.addr = addr
-        self.func = func
-        self.func_name = func_name
-        self.worker = worker
-        self.state = TASK_STATE_INIT
-        self.port = None
-        self.let = None
-        self.tid = None
-        self.ret = None
-
-    def clean(self):
-        if self.port:
-            self.port.close()
-
-    def dump_args(self, args, kwargs):
-        args = inspect.signature(self.func).bind(*args, **kwargs)
-        args.apply_defaults()
-        kwargs = args.arguments
-        for name, arg in kwargs.items():
-            if hasattr(arg, "__dump__"):
-                kwargs[name] = arg.__dump__()
-        return kwargs
-
-    def load_ret(self, ret):
-        ret_cls = self.func.__annotations__.get("return")
-        if ret_cls:
-            ret = ret_cls.__load__(ret)
-        return ret
-
-    def wait_for_server(self, times=5, intervals=0.5):
-        self.tid = self.port.read()
-        while not self.tid and times:
-            self.port.reconnect()
-            self.tid = self.port.read()
-            times -= 1
-            gevent.sleep(intervals)
-
-    def exec(self, *args, **kwargs):
-        self.state = TASK_STATE_READY
-        self.worker.wait_until_idle()
-        self.state = TASK_STATE_RUNNING
-        self.port = Port.create_connector(self.addr)
-        self.wait_for_server()
-        kwargs = self.dump_args(args, kwargs)
-        if self.port.write((self.func_name, kwargs)):
-            msg = self.port.read()
-            if msg != None:
-                self.ret = self.load_ret(msg)
-                if isinstance(self.ret, CatchException):
-                    self.state = TASK_STATE_FAIL
-                    self.worker.on_finish_task(self)
-                    self.ret.re_raise()
-                else:
-                    self.state = TASK_STATE_SUCCESS
-                    self.worker.on_finish_task(self)
-                    return
-        self.state = TASK_STATE_FAIL
-
-    def start(self, *args, **kwargs):
-        self.worker.tasks.add(self)
-        self.let = gevent.spawn(self.exec, *args, **kwargs)
-
-    def __call__(self, *args, **kwargs):
-        self.worker.tasks.add(self)
-        self.exec(*args, **kwargs)
-        return self.ret
-
-    def join(self):
-        self.let.join()
+    @classmethod
+    def launch(cls):
+        parser = argparse.ArgumentParser()
+        parser.add_argument("path", type=str, help="path",
+                            nargs="?", default=".")
+        parser.add_argument("-p", "--port", type=int,
+                            help="port", default=DEFAULT_PORT)
+        parser.add_argument("-l", "--logging", type=str,
+                            help="Logging level", default="warning")
+        args = parser.parse_args()
+        logging.basicConfig(level=getattr(logging, args.logging.upper()))
+        cls(args.path).run(port=args.port)

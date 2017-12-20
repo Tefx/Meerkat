@@ -1,6 +1,8 @@
 from threading import current_thread
 from gevent.monkey import patch_all
 
+import mrkt.agent.worker
+
 patch_all(thread=current_thread().name == "MainThread")
 import os
 import os.path
@@ -168,7 +170,7 @@ class DockerViaSSH(BaseService):
 
     def start_workers(self, num=1):
         self.dockers = [self.start_docker(agent.DEFAULT_PORT)]
-        self.workers = [agent.Worker((self.addr, agent.DEFAULT_PORT)) for _ in range(num)]
+        self.workers = [mrkt.agent.worker.Worker((self.addr, agent.DEFAULT_PORT)) for _ in range(num)]
         return self.workers
 
     def stop_workers(self):

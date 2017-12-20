@@ -1,1 +1,2 @@
-from .base import Agent, Worker, DEFAULT_PORT
+from .agent import DEFAULT_PORT
+from .worker import Worker
