@@ -141,59 +141,70 @@ class Agent:
             logging.CRITICAL("[%s.Call]: cannot receive request!", self.__class__.__name__)
 
 
-class Client:
+NULL_AGENT = Agent()
+TASK_STATE_INIT= 0
+TASK_STATE_READY = 1
+TASK_STATE_RUNNING = 2
+TASK_STATE_SUCCESS = 3
+TASK_STATE_FAIL = 4
+
+
+class Worker:
     def __init__(self, agent_addr, parallel_task_limit=None):
         self.agent_addr = agent_addr
-        self.running_tasks = set()
-        self.ptask_lim = parallel_task_limit or self.cpu_count()
-        self.ptask_semaphore = BoundedSemaphore(self.ptask_lim)
+        self.tasks = set()
+        self.capacity = parallel_task_limit or self.cpu_count()
+        self.ptask_semaphore = BoundedSemaphore(self.capacity)
 
-    def idle_ratio(self):
-        return 1 - len(self.running_tasks)/self.ptask_lim
+    def utilization(self):
+        return len(self.tasks) / self.capacity
 
-    def on_start_task(self, proc):
-        self.running_tasks.add(proc)
+    def wait_until_idle(self):
         if hasattr(self, "ptask_semaphore"):
             self.ptask_semaphore.acquire()
 
-    def on_finish_task(self, proc):
+    def on_finish_task(self, task):
+        self.tasks.remove(task)
+        task.clean()
         if hasattr(self, "ptask_semaphore"):
             self.ptask_semaphore.release()
-        self.running_tasks.remove(proc)
 
-    def on_fail_task(self, proc):
-        if hasattr(self, "ptask_semaphore"):
-            self.ptask_semaphore.release()
-        self.running_tasks.remove(proc)
-
-    def call(self, func, *args, **kwargs):
-        proc = self.async_call(func, *args, **kwargs)
-        proc.join()
-        return proc.value
-
-    def async_call(self, func, *args, **kwargs):
+    def make_task(self, func):
         func_name = function_index(func)
-        proc = RProc(self.agent_addr, func, func_name, self)
-        proc.async_call(*args, **kwargs)
-        return proc
+        return Task(self.agent_addr, func, func_name, self)
+
+    def exec(self, func, *args, **kwargs):
+        task = self.make_task(func)
+        return task(*args, **kwargs)
+
+    def async_exec(self, func, *args, **kwargs):
+        task = self.make_task(func)
+        task.start(*args, **kwargs)
+        return task
 
     def __getattr__(self, name):
         index = "_adm_{}".format(name)
-        return RProc(self.agent_addr, getattr(Agent(), index), index, self)
+        return Task(self.agent_addr, getattr(NULL_AGENT, index), index, self)
 
     def __repr__(self):
         return "Client[{}]".format(self.agent_addr)
 
 
-class RProc:
+class Task:
     def __init__(self, addr, func, func_name, worker):
+        self.addr = addr
         self.func = func
         self.func_name = func_name
         self.worker = worker
-        self.addr = addr
+        self.state = TASK_STATE_INIT
         self.port = None
         self.let = None
-        self.rpid = None
+        self.tid = None
+        self.ret = None
+
+    def clean(self):
+        if self.port:
+            self.port.close()
 
     def dump_args(self, args, kwargs):
         args = inspect.signature(self.func).bind(*args, **kwargs)
@@ -211,44 +222,42 @@ class RProc:
         return ret
 
     def wait_for_server(self, times=5, intervals=0.5):
-        self.rpid = self.port.read()
-        while not self.rpid and times:
+        self.tid = self.port.read()
+        while not self.tid and times:
             self.port.reconnect()
-            self.rpid = self.port.read()
+            self.tid = self.port.read()
             times -= 1
             gevent.sleep(intervals)
 
-    def process(self, *args, **kwargs):
+    def exec(self, *args, **kwargs):
+        self.state = TASK_STATE_READY
+        self.worker.wait_until_idle()
+        self.state = TASK_STATE_RUNNING
         self.port = Port.create_connector(self.addr)
         self.wait_for_server()
         kwargs = self.dump_args(args, kwargs)
         if self.port.write((self.func_name, kwargs)):
             msg = self.port.read()
             if msg != None:
-                ret = self.load_ret(msg)
-                if isinstance(ret, CatchException):
-                    self.worker.on_fail_task(self)
-                    self.port.close()
-                    ret.re_raise()
-                else:
-                    self.port.close()
+                self.ret = self.load_ret(msg)
+                if isinstance(self.ret, CatchException):
+                    self.state = TASK_STATE_FAIL
                     self.worker.on_finish_task(self)
-                    return ret
-        self.port.close()
-        self.worker.on_fail_task(self)
+                    self.ret.re_raise()
+                else:
+                    self.state = TASK_STATE_SUCCESS
+                    self.worker.on_finish_task(self)
+                    return
+        self.state = TASK_STATE_FAIL
+
+    def start(self, *args, **kwargs):
+        self.worker.tasks.add(self)
+        self.let = gevent.spawn(self.exec, *args, **kwargs)
 
     def __call__(self, *args, **kwargs):
-        self.async_call(*args, **kwargs)
-        self.join()
-        return self.value
-
-    def async_call(self, *args, **kwargs):
-        self.worker.on_start_task(self)
-        self.let = gevent.spawn(self.process, *args, **kwargs)
+        self.worker.tasks.add(self)
+        self.exec(*args, **kwargs)
+        return self.ret
 
     def join(self):
         self.let.join()
-
-    @property
-    def value(self):
-        return self.let.value

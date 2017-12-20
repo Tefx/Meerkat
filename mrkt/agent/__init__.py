@@ -1,1 +1,1 @@
-from .base import Agent, Client, DEFAULT_PORT
+from .base import Agent, Worker, DEFAULT_PORT

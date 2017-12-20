@@ -75,7 +75,6 @@ class Port:
                 return False
             chunks.append(recv)
             length -= len(recv)
-        # buf = b"".join(chunks).decode("utf-8")
         buf = b"".join(chunks)
         return load(buf)
 

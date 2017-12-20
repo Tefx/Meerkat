@@ -9,9 +9,13 @@ from .base import Agent, index_split, DEFAULT_PORT
 
 
 class DynamicAgent(Agent):
-    def __init__(self, path):
+    def __init__(self, path=None):
         super(DynamicAgent, self).__init__()
         self.module_cache = {}
+        if path:
+            self.setup_path(path)
+
+    def setup_path(self, path):
         sys.path.insert(1, os.path.abspath(path))
 
     def look_up_function(self, index):

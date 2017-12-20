@@ -1,8 +1,9 @@
-from .agent import Client
+from .agent import Worker
 from .service import BaseService
 from .platform.base import BasePlatform
 from .utils import flatten_iterables, run_on_each
 
+import gevent
 
 class Cluster:
     def __init__(self, services, **options):
@@ -35,18 +36,33 @@ class Cluster:
             *run_on_each(self.services, "start_workers"))
 
     def submit(self, func, *args, **kwargs):
-        worker = max(self.workers, key=Client.idle_ratio)
-        return worker.async_call(func, *args, **kwargs)
+        for worker in self.workers:
+            if worker.utilization() < 1:
+                return worker.async_exec(func, *args, **kwargs)
+        return None
 
-    def async_map(self, func, *iterables):
-        args_list = list(zip(*iterables))
-        return [self.submit(func, *args) for args in args_list]
-
-    def joinall(self, procs):
-        for proc in procs:
-            proc.join()
+    def joinall(self, tasks):
+        for task in tasks:
+            task.join()
 
     def map(self, func, *iterables):
-        procs = self.async_map(func, *iterables)
-        self.joinall(procs)
-        return [p.value for p in procs]
+        args_list = list(zip(*iterables))
+        tasks =[]
+
+        def _schedule():
+            for worker in self.workers:
+                while worker.utilization() < 1:
+                    if not args_list: return
+                    args = args_list.pop(0)
+                    task = worker.make_task(func)
+                    tasks.append(task)
+                    task.start(*args)
+                    gevent.spawn(_wait, task)
+
+        def _wait(task):
+            task.join()
+            _schedule()
+
+        _schedule()
+        self.joinall(tasks)
+        return [task.ret for task in tasks]

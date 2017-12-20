@@ -168,7 +168,7 @@ class DockerViaSSH(BaseService):
 
     def start_workers(self, num=1):
         self.dockers = [self.start_docker(agent.DEFAULT_PORT)]
-        self.workers = [agent.Client((self.addr, agent.DEFAULT_PORT)) for _ in range(num)]
+        self.workers = [agent.Worker((self.addr, agent.DEFAULT_PORT)) for _ in range(num)]
         return self.workers
 
     def stop_workers(self):
