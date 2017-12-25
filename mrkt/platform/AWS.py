@@ -7,6 +7,7 @@ import gevent
 import logging
 from .base import BasePlatform
 import urllib.request
+from copy import copy
 
 COREOS_AMI_URL = "https://stable.release.core-os.net/amd64-usr/current/coreos_production_ami_hvm_{region}.txt"
 
@@ -17,18 +18,17 @@ def fetch_coreos_ami(region):
 
 
 class EC2(BasePlatform):
-    def __init__(self, service_cls, service_num,
+    def __init__(self, service_cls, service_dict,
                  sgroup, keyname, keyfile,
-                 vm_type="t2.micro",
                  ami=None, username="core",
                  pgroup=None, region="ap-southeast-1",
                  clean_action="stop"):
-        super().__init__(service_cls, service_num)
+        super().__init__(service_cls)
+        self.service_dict = service_dict
         self.sgroup = sgroup
         self.username = username
         self.keyname = keyname
         self.keyfile = keyfile
-        self.vm_type = vm_type
         self.ami = ami or fetch_coreos_ami(region)
         if pgroup:
             self.placement = {"GroupName": pgroup}
@@ -38,70 +38,75 @@ class EC2(BasePlatform):
         self.instances = []
         self.ec2 = boto3.resource("ec2", region_name=region)
 
-    def finding_existing_instances(self, num):
+    def existing_instances_on_platform(self):
         filters = [
             {"Name": "instance-state-name",
              'Values': ["running", "stopped"]},
             {"Name": "image-id",
              'Values': [self.ami]},
             {"Name": "instance-type",
-             "Values": [self.vm_type]},
+             "Values": list(self.service_dict.keys())},
             {"Name": "tag:mrkt",
              "Values": ["True"]}
         ]
-        found_instances = []
-        for ins in self.ec2.instances.filter(Filters=filters):
-            if ins not in self.instances:
-                found_instances.append(ins)
-                if len(found_instances) == num:
-                    break
-        return found_instances
+        return [ins for ins in self.ec2.instances.filter(Filters=filters)
+                if ins not in self.instances]
 
-    def launch_instances(self, num):
+    def launch_instances(self, service_dict):
         tags = [{"ResourceType": "instance",
                  "Tags": [{"Key": "mrkt", "Value": "True"}]}]
-        self.instances.extend(self.ec2.create_instances(
-            ImageId=self.ami,
-            InstanceType=self.vm_type,
-            MinCount=num,
-            MaxCount=num,
-            KeyName=self.keyname,
-            Placement=self.placement,
-            SecurityGroupIds=[self.sgroup],
-            TagSpecifications=tags))
+        for vm_type, num in service_dict.items():
+            if num > 0:
+                self.instances.extend(
+                    self.ec2.create_instances(
+                        ImageId=self.ami,
+                        InstanceType=vm_type,
+                        MinCount=num,
+                        MaxCount=num,
+                        KeyName=self.keyname,
+                        Placement=self.placement,
+                        SecurityGroupIds=[self.sgroup],
+                        TagSpecifications=tags))
 
-    def prepare(self):
-        need_instance_num = self.service_num - len(self.instances)
-        exists = self.finding_existing_instances(need_instance_num)
-        for ins in exists:
-            if ins.state["Name"] == "stopped":
-                ins.start()
-        need_instance_num -= len(exists)
-        logging.info("[AWS]: Preparing... %s exist, %s on platfrom, and %s new.", len(
-            self.instances), len(exists), need_instance_num)
-        self.instances.extend(exists)
-        if need_instance_num > 0:
-            self.launch_instances(need_instance_num)
+    def prepare_instances(self):
+        service_dict = copy(self.service_dict)
+        logging.info("[AWS]Preparing VMs: Needs %s", service_dict)
+        for ins in self.instances:
+            if service_dict.get(ins.instance_type) > 0:
+                service_dict[ins.instance_type] -= 1
+            else:
+                self.clean(instances=[ins])
+        logging.info("[AWS]Preparing VMs: Not connected %s", service_dict)
+        for ins in self.existing_instances_on_platform():
+            if service_dict.get(ins.instance_type) > 0:
+                service_dict[ins.instance_type] -= 1
+                self.instances.append(ins)
+                if ins.state["Name"] == "stopped":
+                    ins.start()
+        logging.info("[AWS]Preparing VMs: New launch %s", service_dict)
+        self.launch_instances(service_dict)
         for ins in self.instances:
             ins.load()
-            while (ins.state["Name"] != "running"):
+            while ins.state["Name"] != "running":
                 gevent.sleep(1)
                 ins.load()
 
     def services(self):
-        self.prepare()
+        self.prepare_instances()
         return [self.service_cls(ins.public_dns_name,
                                  ssh_options=dict(username=self.username,
                                                   key_filename=self.keyfile),
                                  retry_ssh=10, retry_ssh_interval=1)
                 for ins in self.instances]
 
-    def clean(self):
+    def clean(self, instances=None):
+        if instances == None:
+            instances = self.instances
         if self.clean_action == "none":
             pass
         elif self.clean_action == "stop":
-            for ins in self.instances:
+            for ins in instances:
                 ins.stop()
         elif self.clean_action == "terminate":
-            for ins in self.instances:
+            for ins in instances:
                 ins.terminate()
