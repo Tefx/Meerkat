@@ -20,7 +20,7 @@ DOCKER_RM_CMD = "docker rm -f {name}"
 DOCKER_INSTALL_IMAGE_CMD = "gunzip -c {image} | docker load && rm {image}"
 DOCKER_UPDATE_IMAGE_CMD = "docker pull {image}"
 DOCKER_UNINSTALLL_IMAGE_CMD = "docker rmi {image}"
-DOCKER_CONTAINERS = "docker container ls --format \"{{json .}}\""
+DOCKER_CONTAINERS = "docker container ls -a --format \"{{json .Names}}\""
 DOCKER_IMAGES = "docker images --format \"{{json .Repository}}\""
 
 
@@ -82,7 +82,8 @@ class DockerViaSSH(BaseService):
         times = 0
         last_exception = None
         while times < self.retry_ssh:
-            logging.info("[SSH]: [%s/%s] %s with %s", times + 1, self.retry_ssh, self.addr, self.ssh_options)
+            logging.info("[SSH]: [%s/%s] %s with %s", times + 1,
+                         self.retry_ssh, self.addr, self.ssh_options)
             try:
                 ssh_client.connect(self.addr, **self.ssh_options)
                 logging.info("[SSH]: %s connected", self.addr)
@@ -110,14 +111,11 @@ class DockerViaSSH(BaseService):
 
     def install_image(self):
         if not self.image_update:
-            image = self.image or os.path.basename(self.image_archive).split(".")[0]
+            image = self.image or os.path.basename(
+                self.image_archive).split(".")[0]
             if self.image_exists(image):
                 self.image = image
                 return
-        # if self.image and self.image_exists(self.image) and self.image_update:
-        #     image = self.image
-        #     self.kill_dockers(self.existing_dockers(image=self.image))
-        #     self.uninstall_image(self.image)
         if self.image_archive:
             sftp = paramiko.SFTPClient.from_transport(
                 self.ssh_client.get_transport())
@@ -139,18 +137,20 @@ class DockerViaSSH(BaseService):
     def image_exists(self, name):
         for line in self.ssh_exec(DOCKER_IMAGES).splitlines():
             image = json.loads(line)
-            if ":" not in name: name += ":latest"
-            if ":" not in image: image += ":latest"
+            if ":" not in name:
+                name += ":latest"
+            if ":" not in image:
+                image += ":latest"
             if name == image:
                 return True
         return False
 
-    def existing_dockers(self, image):
+    def existing_dockers(self):
         dockers = []
         for line in self.ssh_exec(DOCKER_CONTAINERS).splitlines():
-            container = json.loads(line)
-            if container["Image"].startswith(image):
-                dockers.append(container["Names"])
+            container_name = json.loads(line)
+            if container_name.startswith("mrkt"):
+                dockers.append(container_name)
         return dockers
 
     def kill_dockers(self, dockers=None):
@@ -159,7 +159,7 @@ class DockerViaSSH(BaseService):
             self.ssh_exec(DOCKER_RM_CMD.format(name=" ".join(dockers)))
 
     def start_docker(self, out_port):
-        self.kill_dockers(self.existing_dockers(image=self.image))
+        self.kill_dockers(self.existing_dockers())
         port = agent.DEFAULT_PORT
         name = "mrkt_{}".format(out_port)
         engine_start_cmd = AGENT_RUN_CMD.format(in_port=port)
@@ -171,7 +171,8 @@ class DockerViaSSH(BaseService):
 
     def start_workers(self, num=1):
         self.dockers = [self.start_docker(agent.DEFAULT_PORT)]
-        self.workers = [mrkt.agent.worker.Worker((self.addr, self.worker_port)) for _ in range(num)]
+        self.workers = [mrkt.agent.worker.Worker(
+            (self.addr, self.worker_port)) for _ in range(num)]
         return self.workers
 
     def stop_workers(self):
