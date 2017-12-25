@@ -23,6 +23,7 @@ def dir_patch(path, delta):
         f.write(delta)
     subprocess.run(["rdiffdir", "patch", path, ".delta"])
     os.remove(".delta")
+    return True
 
 
 if __name__ == '__main__':

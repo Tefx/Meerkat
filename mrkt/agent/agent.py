@@ -91,11 +91,13 @@ class Agent:
         p = self.processes.get(uuid, None)
         if p:
             os.kill(p.pid, signal.SIGSTOP)
+        return True
 
     def _adm_resume(self, uuid):
         p = self.processes.get(uuid, None)
         if p:
             os.kill(p.pid, signal.SIGCONT)
+        return True
 
     def _adm_list(self):
         return list(self.function_store.keys())
@@ -183,6 +185,7 @@ class DynamicAgent(Agent):
             self.module_cache[module_name] = importlib.reload(module)
         self.function_store = {}
         self.register_adm_functions()
+        return True
 
     @classmethod
     def launch(cls):

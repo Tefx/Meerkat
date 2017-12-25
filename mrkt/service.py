@@ -15,7 +15,7 @@ from . import agent
 from .utils import set_option
 
 AGENT_RUN_CMD = "mrkt-agent -p {in_port} ."
-DOCKER_RUN_CMD = "docker run -d --name {name} -p {out_port}:{in_port} {image} {engine_start_cmd}"
+DOCKER_RUN_CMD = "docker run -itd --name {name} -p {out_port}:{in_port} {image} {engine_start_cmd}"
 DOCKER_RM_CMD = "docker rm -f {name}"
 DOCKER_INSTALL_IMAGE_CMD = "gunzip -c {image} | docker load && rm {image}"
 DOCKER_UPDATE_IMAGE_CMD = "docker pull {image}"
@@ -73,6 +73,7 @@ class DockerViaSSH(BaseService):
         set_option(self, "ssh_options", {}, options)
         set_option(self, "retry_ssh", 1, options)
         set_option(self, "retry_ssh_interval", 0, options)
+        set_option(self, "worker_port", agent.DEFAULT_PORT, options)
 
     def try_ssh_connect(self):
         ssh_client = paramiko.SSHClient()
@@ -170,7 +171,7 @@ class DockerViaSSH(BaseService):
 
     def start_workers(self, num=1):
         self.dockers = [self.start_docker(agent.DEFAULT_PORT)]
-        self.workers = [mrkt.agent.worker.Worker((self.addr, agent.DEFAULT_PORT)) for _ in range(num)]
+        self.workers = [mrkt.agent.worker.Worker((self.addr, self.worker_port)) for _ in range(num)]
         return self.workers
 
     def stop_workers(self):

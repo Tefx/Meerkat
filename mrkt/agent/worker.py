@@ -73,8 +73,14 @@ class Task:
                 else:
                     self.state = TASK_STATE_SUCCESS
                     self.worker.on_finish_task(self)
-                    return
+                return
+            else:
+                error_msg = "[{}]: No response from function invocation".format(self.func_name)
+        else:
+            error_msg = "[{}]: Cannot send function invocation request".format(self.func_name)
         self.state = TASK_STATE_FAIL
+        self.worker.on_finish_task(self)
+        raise OSError(error_msg)
 
     def start(self, *args, **kwargs):
         self.worker.tasks.add(self)
@@ -88,6 +94,12 @@ class Task:
     def join(self):
         self.let.join()
 
+    def __repr__(self):
+        return "[T/{}]<{}>".format(self.state, self.func_name)
+
+    def is_adm_task(self):
+        return self.func_name.startswith("_adm_")
+
 
 class Worker:
     def __init__(self, agent_addr, parallel_task_limit=None):
@@ -97,7 +109,7 @@ class Worker:
         self.ptask_semaphore = BoundedSemaphore(self.capacity)
 
     def utilization(self):
-        return len(self.tasks) / self.capacity
+        return len([t for t in self.tasks if not t.is_adm_task()])/ self.capacity
 
     def wait_until_idle(self):
         if hasattr(self, "ptask_semaphore"):
@@ -131,11 +143,13 @@ class Worker:
 
     def sync_dir_delta(self, path):
         sig = self.dir_signature()
+        logging.info("[Worker.Sync]: Got signture[size:%s]", len(sig))
         delta = dir_delta(sig, path)
-        logging.info("[Worker.Sync]: Got delta")
+        logging.info("[Worker.Sync]: Delta calculated[size:%s]", len(delta))
         return delta
 
     def sync_dir_patch(self, delta):
         self.dir_patch(delta)
+        logging.info("[Worker.Sync]%s: Patch finished", self.agent_addr)
         self.clean_cache()
-        logging.info("[Worker.Sync]%s: Patch finish", self.agent_addr)
+        logging.info("[Worker.Sync]%s: Cache cleaned", self.agent_addr)

@@ -55,6 +55,7 @@ class Cluster:
 
         def _schedule():
             for worker in self.workers:
+                # print([w.tasks for w in self.workers])
                 while worker.utilization() < 1:
                     if not args_list: return
                     args = args_list.pop(0)
