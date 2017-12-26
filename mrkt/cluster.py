@@ -35,9 +35,10 @@ class Cluster:
         self.workers = flatten_iterables(
             *run_on_each(self.services, "start_workers"))
 
-    def sync_dir(self, path):
-        delta = self.workers[0].sync_dir_delta(path)
-        run_on_each(self.workers, "sync_dir_patch", delta=delta)
+    def sync_dir(self, path, remote_path=None):
+        remote_path = remote_path or path
+        delta = self.workers[0].sync_dir_delta(path, remote_path)
+        run_on_each(self.workers, "sync_dir_patch", delta=delta, remote_path=remote_path)
 
     def submit(self, func, *args, **kwargs):
         for worker in self.workers:

@@ -174,11 +174,11 @@ class DynamicAgent(Agent):
             self.register(func, index)
         return self.function_store[index]
 
-    def _adm_dir_signature(self):
-        return dir_sig(self.path)
+    def _adm_dir_signature(self, subpath):
+        return dir_sig(os.path.join(self.path, subpath))
 
-    def _adm_dir_patch(self, delta):
-        return dir_patch(self.path, delta)
+    def _adm_dir_patch(self, delta, subpath):
+        return dir_patch(os.path.join(self.path, subpath), delta)
 
     def _adm_clean_cache(self):
         for module_name, module in list(self.module_cache.items()):

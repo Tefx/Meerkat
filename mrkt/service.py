@@ -14,7 +14,7 @@ from gevent import sleep
 from . import agent
 from .utils import set_option
 
-AGENT_RUN_CMD = "mrkt-agent -p {in_port} ."
+AGENT_RUN_CMD = "mrkt-agent -p {in_port} -l debug ."
 DOCKER_RUN_CMD = "docker run -itd --name {name} -p {out_port}:{in_port} {image} {engine_start_cmd}"
 DOCKER_RM_CMD = "docker rm -f {name}"
 DOCKER_INSTALL_IMAGE_CMD = "gunzip -c {image} | docker load && rm {image}"
@@ -22,6 +22,7 @@ DOCKER_UPDATE_IMAGE_CMD = "docker pull {image}"
 DOCKER_UNINSTALLL_IMAGE_CMD = "docker rmi {image}"
 DOCKER_CONTAINERS = "docker container ls -a --format \"{{json .Names}}\""
 DOCKER_IMAGES = "docker images --format \"{{json .Repository}}\""
+DOCKER_LIST_NONE_IMAGES_CMD = "docker images | grep '<none>' | awk '{print $3}'"
 
 
 class BaseService:
@@ -128,6 +129,14 @@ class DockerViaSSH(BaseService):
                     self.image = line[13:].strip()
         else:
             self.ssh_exec(DOCKER_UPDATE_IMAGE_CMD.format(image=self.image))
+        self.clean_legacy_images()
+
+    def clean_legacy_images(self):
+        images = []
+        for line in self.ssh_exec(DOCKER_LIST_NONE_IMAGES_CMD).splitlines():
+            images.append(line.strip())
+        if images:
+            self.ssh_exec(DOCKER_UNINSTALLL_IMAGE_CMD.format(image=" ".join(images)))
 
     def uninstall_image(self, image=None):
         self.ssh_exec(DOCKER_UNINSTALLL_IMAGE_CMD.format(

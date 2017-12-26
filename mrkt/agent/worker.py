@@ -141,15 +141,15 @@ class Worker:
     def __repr__(self):
         return "Client[{}]".format(self.agent_addr)
 
-    def sync_dir_delta(self, path):
-        sig = self.dir_signature()
+    def sync_dir_delta(self, local_path, remote_path):
+        sig = self.dir_signature(remote_path)
         logging.info("[Worker.Sync]: Got signture[size:%s]", len(sig))
-        delta = dir_delta(sig, path)
+        delta = dir_delta(sig, local_path)
         logging.info("[Worker.Sync]: Delta calculated[size:%s]", len(delta))
         return delta
 
-    def sync_dir_patch(self, delta):
-        self.dir_patch(delta)
+    def sync_dir_patch(self, delta, remote_path):
+        self.dir_patch(delta, remote_path)
         logging.info("[Worker.Sync]%s: Patch finished", self.agent_addr)
         self.clean_cache()
         logging.info("[Worker.Sync]%s: Cache cleaned", self.agent_addr)
