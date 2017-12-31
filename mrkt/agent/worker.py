@@ -1,5 +1,6 @@
 import inspect
 import logging
+import os.path
 
 import gevent
 from gevent._semaphore import BoundedSemaphore
@@ -142,7 +143,7 @@ class Worker:
         return "Client[{}]".format(self.agent_addr)
 
     def sync_dir_delta(self, local_path, remote_path):
-        sig = self.dir_signature(remote_path)
+        sig = self.dir_signature(remote_path, os.path.isdir(local_path))
         logging.info("[Worker.Sync]: Got signture[size:%s]", len(sig))
         delta = dir_delta(sig, local_path)
         logging.info("[Worker.Sync]: Delta calculated[size:%s]", len(delta))

@@ -1,9 +1,15 @@
 import subprocess
 import os.path
+import os
 import lzma
 
 
-def dir_sig(path):
+def dir_sig(path, is_dir=True):
+    if not os.path.exists(path):
+        if is_dir:
+            os.mkdir(path)
+        else:
+            os.mknod(path)
     p = subprocess.run(["rdiffdir", "sig", path, "-"],
                        stdout=subprocess.PIPE)
     return lzma.compress(p.stdout)

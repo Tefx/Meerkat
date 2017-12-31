@@ -174,8 +174,8 @@ class DynamicAgent(Agent):
             self.register(func, index)
         return self.function_store[index]
 
-    def _adm_dir_signature(self, subpath):
-        return dir_sig(os.path.join(self.path, subpath))
+    def _adm_dir_signature(self, subpath, is_dir=True):
+        return dir_sig(os.path.join(self.path, subpath), is_dir)
 
     def _adm_dir_patch(self, delta, subpath):
         return dir_patch(os.path.join(self.path, subpath), delta)
