@@ -143,7 +143,7 @@ class Agent:
             logging.info("[%s.Call]: %s on %s",
                          self.__class__.__name__, index, kwargs)
             if not index.startswith("_adm_"):
-                p = Process(target=self.invoke, args=(port, func, kwargs))
+                p = Process(target=self.invoke, name="mrtk_t{}".format(uuid), args=(port, func, kwargs))
                 setattr(p, "task", (index, func, kwargs))
                 p.start()
                 self.processes[uuid] = p

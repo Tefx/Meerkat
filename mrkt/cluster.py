@@ -27,6 +27,7 @@ class Cluster:
 
     def clean(self):
         run_on_each(self.services, "clean")
+        run_on_each(self.services, "close")
         run_on_each(self.platforms, "clean")
 
     def start_workers(self):

@@ -6,7 +6,7 @@ import gevent
 from gevent._semaphore import BoundedSemaphore
 
 from .agent import DynamicAgent, CatchException, function_index
-from .rpc import Port
+from mrkt.agent.rpc import Port
 from .rdiff import dir_delta
 
 NULL_AGENT = DynamicAgent()

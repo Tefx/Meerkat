@@ -15,7 +15,12 @@ def double(x):
 
 if __name__ == '__main__':
     services = [
-        EC2(DockerViaSSH, 1,
+        EC2(DockerViaSSH,
+            service_dict={
+                "c4.8xlarge": 1,
+                "c4.4xlarge": 1,
+                "c4.2xlarge": 5,
+            },
             sgroup="sg-c86bc4ae",
             keyname="research",
             keyfile="../research.pem",

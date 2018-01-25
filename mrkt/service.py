@@ -98,6 +98,11 @@ class DockerViaSSH(BaseService):
     def connect(self):
         self.ssh_client = self.try_ssh_connect()
 
+    def close(self):
+        if self.ssh_client:
+            self.ssh_client.close()
+            self.ssh_client = None
+
     def ssh_exec(self, cmd):
         logging.info("[EXEC]%s: %s", self.addr, cmd)
         _, out, err = self.ssh_client.exec_command(cmd)
@@ -187,3 +192,7 @@ class DockerViaSSH(BaseService):
     def stop_workers(self):
         self.kill_dockers()
         self.workers = []
+
+    def copy_workers(self):
+        return [mrkt.agent.worker.Worker((self.addr, self.worker_port))
+                for _ in self.workers]
