@@ -1,10 +1,10 @@
 from threading import current_thread
+from logging import getLogger
+logger = getLogger(__name__)
 from gevent.monkey import patch_all
-
 patch_all(thread=current_thread().name == "MainThread")
 import boto3
 import gevent
-import logging
 import urllib.request
 from copy import copy
 
@@ -57,20 +57,20 @@ class EC2(BasePlatform):
 
     def prepare_instances(self):
         srvc_dict = copy(self.srvc_dict)
-        logging.info("[AWS]Preparing VMs: Needs %s", srvc_dict)
+        logger.info("[AWS]Preparing VMs: Needs %s", srvc_dict)
         for ins in self.instances:
             if srvc_dict.get(ins.instance_type) > 0:
                 srvc_dict[ins.instance_type] -= 1
             else:
                 getattr(ins, self.clean_action)()
-        logging.info("[AWS]Preparing VMs: Not connected %s", srvc_dict)
+        logger.info("[AWS]Preparing VMs: Not connected %s", srvc_dict)
         for ins in self.existing_instances_on_platform():
             if srvc_dict.get(ins.instance_type) > 0:
                 srvc_dict[ins.instance_type] -= 1
                 self.instances.append(ins)
                 if ins.state["Name"] == "stopped":
                     ins.start()
-        logging.info("[AWS]Preparing VMs: New launch %s", srvc_dict)
+        logger.info("[AWS]Preparing VMs: New launch %s", srvc_dict)
         tags = [{"ResourceType": "instance",
                  "Tags": [{"Key": "mrkt", "Value": "True"}]}]
         for vm_type, num in srvc_dict.items():

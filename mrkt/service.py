@@ -1,17 +1,17 @@
 import mrkt.agent.worker
 
 from threading import current_thread
+from logging import getLogger
+logger = getLogger(__name__)
 from gevent.monkey import patch_all
 
 patch_all(thread=current_thread().name == "MainThread")
 
 from . import agent
-from .utils import set_options
 
 import os
 import os.path
 import paramiko
-import logging
 import json
 from gevent import sleep
 
@@ -92,11 +92,11 @@ class SSHService(BaseService):
         times = 0
         last_exception = Exception()
         while times < self.retry_ssh:
-            logging.info("[SSH]: [%s/%s] %s with %s", times + 1,
+            logger.info("[SSH]: [%s/%s] %s with %s", times + 1,
                          self.retry_ssh, self.addr, self.ssh_options)
             try:
                 ssh_client.connect(self.addr, **self.ssh_options)
-                logging.info("[SSH]: %s connected", self.addr)
+                logger.info("[SSH]: %s connected", self.addr)
                 return ssh_client
             except paramiko.ssh_exception.NoValidConnectionsError as xcp:
                 last_exception = xcp
@@ -113,14 +113,14 @@ class SSHService(BaseService):
             self.ssh_client = None
 
     def ssh_exec(self, cmd):
-        logging.info("[EXEC]%s: %s", self.addr, cmd)
+        logger.info("[EXEC]%s: %s", self.addr, cmd)
         _, out, err = self.ssh_client.exec_command(cmd)
         if out.channel.recv_exit_status() != 0:
-            logging.critical("[EXEC]%s: %s", self.addr, cmd)
-            logging.critical("[EXEC]%s: %s", self.addr, err.read().decode())
+            logger.critical("[EXEC]%s: %s", self.addr, cmd)
+            logger.critical("[EXEC]%s: %s", self.addr, err.read().decode())
             return None
         out = out.read().decode()
-        logging.debug("[ERET]%s: %s", self.addr, out)
+        logger.debug("[ERET]%s: %s", self.addr, out)
         return out
 
     def install_image(self):

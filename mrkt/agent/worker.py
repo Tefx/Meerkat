@@ -1,7 +1,7 @@
 import inspect
-import logging
 import os.path
-from contextlib import contextmanager
+from logging import getLogger
+logger = getLogger(__name__)
 
 import gevent
 from gevent._semaphore import BoundedSemaphore
@@ -144,16 +144,16 @@ class Worker:
 
     def calculate_dir_delta(self, path):
         sig = self.dir_signature(path, os.path.isdir(path))
-        logging.info("[Worker.Sync]%s: Got signture[size:%s]", self.agent_addr, len(sig))
+        logger.info("[Worker.Sync]%s: Got signture[size:%s]", self.agent_addr, len(sig))
         delta = dir_delta(sig, path)
-        logging.info("[Worker.Sync]%s: Delta calculated[size:%s]", self.agent_addr, len(delta))
+        logger.info("[Worker.Sync]%s: Delta calculated[size:%s]", self.agent_addr, len(delta))
         return delta
 
     def sync_with_delta(self, delta, path):
         self.dir_patch(delta, path)
-        logging.info("[Worker.Sync]%s: Patch finished", self.agent_addr)
+        logger.info("[Worker.Sync]%s: Patch finished", self.agent_addr)
         self.clean_cache()
-        logging.info("[Worker.Sync]%s: Cache cleaned", self.agent_addr)
+        logger.info("[Worker.Sync]%s: Cache cleaned", self.agent_addr)
         self.sync_tag += 1
 
     def is_syncing(self):

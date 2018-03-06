@@ -11,7 +11,8 @@ if __name__ == '__main__':
     import sys
     import os
 
-    logging.basicConfig(level=logging.INFO)
+    # logging.basicConfig(level=logging.INFO)
+    logging.getLogger("").setLevel(logging.INFO)
     sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
     from mrkt import Cluster, SSH
@@ -27,7 +28,7 @@ if __name__ == '__main__':
         #     clean_action="terminate"),
     ]
 
-    with Cluster(platforms, image="tefx/mrkt", image_update=False, image_clean=False) as cluster:
+    with Cluster(platforms, image="tefx/mrkt", image_update=True, image_clean=False) as cluster:
         cluster.sync_dir(".")
         res = list(cluster.map(sqr, range(10)))
         print(sum(res))

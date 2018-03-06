@@ -1,5 +1,4 @@
-from ..utils import call_on_each, set_options
-from ..service import SSHService
+from ..utils import call_on_each
 
 
 class BasePlatform:
