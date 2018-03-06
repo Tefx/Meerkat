@@ -1,18 +1,19 @@
+import mrkt.agent.worker
+
 from threading import current_thread
 from gevent.monkey import patch_all
 
-import mrkt.agent.worker
-
 patch_all(thread=current_thread().name == "MainThread")
+
+from . import agent
+from .utils import set_options
+
 import os
 import os.path
 import paramiko
 import logging
 import json
 from gevent import sleep
-
-from . import agent
-from .utils import set_option
 
 AGENT_RUN_CMD = "mrkt-agent -p {in_port} -l debug ."
 DOCKER_RUN_CMD = "docker run -itd --name {name} -p {out_port}:{in_port} {image} {engine_start_cmd}"
@@ -26,20 +27,26 @@ DOCKER_LIST_NONE_IMAGES_CMD = "docker images | grep '<none>' | awk '{print $3}'"
 
 
 class BaseService:
-    def __init__(self, addr, **options):
+    def __init__(self, addr):
         self.addr = addr
         self.workers = []
-        self.update_options(options)
+        self.image = None
+        self.image_archive = None
+        self.image_update = True
+        self.image_clean = False
 
-    def update_options(self, options):
-        set_option(self, "image", None, options)
-        set_option(self, "image_archive", None, options)
-        set_option(self, "image_update", True, options)
-        set_option(self, "image_clean", True, options)
+    def set_options(self, *options_list):
+        for options in options_list:
+            for option, value in options.items():
+                if hasattr(self, option):
+                    setattr(self, option, value)
 
-    def prepare(self):
+    def prepare_workers(self):
         self.connect()
         self.install_image()
+        if self.workers:
+            self.stop_workers()
+        self.start_workers()
 
     def connect(self):
         pass
@@ -47,7 +54,7 @@ class BaseService:
     def install_image(self):
         raise NotImplementedError
 
-    def uninstall_image(self):
+    def uninstall_image(self, image=None):
         raise NotImplementedError
 
     def start_workers(self, num=1):
@@ -63,25 +70,27 @@ class BaseService:
             self.uninstall_image()
 
 
-class DockerViaSSH(BaseService):
-    def __init__(self, addr, **options):
-        super(DockerViaSSH, self).__init__(addr, **options)
+class SSHService(BaseService):
+    def __init__(self, addr, **ssh_options):
+        super(SSHService, self).__init__(addr)
         self.ssh_client = None
         self.dockers = []
+        self.ssh_options = ssh_options
+        self.retry_ssh = 2
+        self.retry_ssh_interval = 1
+        self.worker_port = agent.DEFAULT_PORT
 
-    def update_options(self, options):
-        super(DockerViaSSH, self).update_options(options)
-        set_option(self, "ssh_options", {}, options)
-        set_option(self, "retry_ssh", 1, options)
-        set_option(self, "retry_ssh_interval", 0, options)
-        set_option(self, "worker_port", agent.DEFAULT_PORT, options)
+    def set_options(self, *options_list):
+        ssh_options = self.ssh_options
+        super(SSHService, self).set_options(*options_list)
+        self.ssh_options.update(ssh_options)
 
     def try_ssh_connect(self):
         ssh_client = paramiko.SSHClient()
         ssh_client.load_system_host_keys()
         ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         times = 0
-        last_exception = None
+        last_exception = Exception()
         while times < self.retry_ssh:
             logging.info("[SSH]: [%s/%s] %s with %s", times + 1,
                          self.retry_ssh, self.addr, self.ssh_options)
@@ -89,8 +98,8 @@ class DockerViaSSH(BaseService):
                 ssh_client.connect(self.addr, **self.ssh_options)
                 logging.info("[SSH]: %s connected", self.addr)
                 return ssh_client
-            except paramiko.ssh_exception.NoValidConnectionsError as e:
-                last_exception = e
+            except paramiko.ssh_exception.NoValidConnectionsError as xcp:
+                last_exception = xcp
             times += 1
             sleep(self.retry_ssh_interval)
         raise last_exception
@@ -106,14 +115,13 @@ class DockerViaSSH(BaseService):
     def ssh_exec(self, cmd):
         logging.info("[EXEC]%s: %s", self.addr, cmd)
         _, out, err = self.ssh_client.exec_command(cmd)
-        if out.channel.recv_exit_status() == 0:
-            out = out.read().decode()
-            logging.debug("[ERET]%s: %s", self.addr, out)
-            return out
-        else:
+        if out.channel.recv_exit_status() != 0:
             logging.critical("[EXEC]%s: %s", self.addr, cmd)
             logging.critical("[EXEC]%s: %s", self.addr, err.read().decode())
             return None
+        out = out.read().decode()
+        logging.debug("[ERET]%s: %s", self.addr, out)
+        return out
 
     def install_image(self):
         if not self.image_update:
@@ -141,7 +149,8 @@ class DockerViaSSH(BaseService):
         for line in self.ssh_exec(DOCKER_LIST_NONE_IMAGES_CMD).splitlines():
             images.append(line.strip())
         if images:
-            self.ssh_exec(DOCKER_UNINSTALLL_IMAGE_CMD.format(image=" ".join(images)))
+            self.ssh_exec(DOCKER_UNINSTALLL_IMAGE_CMD.format(
+                image=" ".join(images)))
 
     def uninstall_image(self, image=None):
         self.ssh_exec(DOCKER_UNINSTALLL_IMAGE_CMD.format(
@@ -180,8 +189,7 @@ class DockerViaSSH(BaseService):
         docker_start_cmd = DOCKER_RUN_CMD.format(
             name=name, image=self.image, engine_start_cmd=engine_start_cmd,
             in_port=port, out_port=out_port)
-        if self.ssh_exec(docker_start_cmd) != None:
-            return name
+        return name if self.ssh_exec(docker_start_cmd) else None
 
     def start_workers(self, num=1):
         self.dockers = [self.start_docker(agent.DEFAULT_PORT)]

@@ -1,6 +1,7 @@
 import inspect
 import logging
 import os.path
+from contextlib import contextmanager
 
 import gevent
 from gevent._semaphore import BoundedSemaphore
@@ -10,7 +11,7 @@ from mrkt.agent.rpc import Port
 from .rdiff import dir_delta
 
 NULL_AGENT = DynamicAgent()
-TASK_STATE_INIT = 0
+TASK_STATE_UNASSIGNED = 0
 TASK_STATE_READY = 1
 TASK_STATE_RUNNING = 2
 TASK_STATE_SUCCESS = 3
@@ -18,12 +19,12 @@ TASK_STATE_FAIL = 4
 
 
 class Task:
-    def __init__(self, addr, func, func_name, worker):
-        self.addr = addr
+    def __init__(self, func, args=None, kwargs=None, func_name=None):
         self.func = func
-        self.func_name = func_name
-        self.worker = worker
-        self.state = TASK_STATE_INIT
+        self.func_name = func_name or function_index(func)
+        self.args = (args or [], kwargs or {})
+        self.state = TASK_STATE_UNASSIGNED
+        self.addr = None
         self.port = None
         self.let = None
         self.tid = None
@@ -32,6 +33,11 @@ class Task:
     def clean(self):
         if self.port:
             self.port.close()
+
+    def assign_to(self, worker):
+        self.addr = worker.agent_addr
+        worker.tasks.add(self)
+        self.let = gevent.spawn(self.execute, worker, *self.args)
 
     def dump_args(self, args, kwargs):
         args = inspect.signature(self.func).bind(*args, **kwargs)
@@ -56,9 +62,9 @@ class Task:
             times -= 1
             gevent.sleep(intervals)
 
-    def exec(self, *args, **kwargs):
+    def execute(self, worker, args, kwargs):
         self.state = TASK_STATE_READY
-        self.worker.wait_until_idle()
+        worker.wait_until_idle()
         self.state = TASK_STATE_RUNNING
         self.port = Port.create_connector(self.addr)
         self.wait_for_server()
@@ -69,30 +75,23 @@ class Task:
                 self.ret = self.load_ret(msg)
                 if isinstance(self.ret, CatchException):
                     self.state = TASK_STATE_FAIL
-                    self.worker.on_finish_task(self)
+                    worker.on_finish_task(self)
                     self.ret.re_raise()
                 else:
                     self.state = TASK_STATE_SUCCESS
-                    self.worker.on_finish_task(self)
+                    worker.on_finish_task(self)
                 return
             else:
                 error_msg = "[{}]: No response from function invocation".format(self.func_name)
         else:
             error_msg = "[{}]: Cannot send function invocation request".format(self.func_name)
         self.state = TASK_STATE_FAIL
-        self.worker.on_finish_task(self)
+        worker.on_finish_task(self)
         raise OSError(error_msg)
 
-    def start(self, *args, **kwargs):
-        self.worker.tasks.add(self)
-        self.let = gevent.spawn(self.exec, *args, **kwargs)
-
-    def __call__(self, *args, **kwargs):
-        self.worker.tasks.add(self)
-        self.exec(*args, **kwargs)
-        return self.ret
-
     def join(self):
+        while self.state == TASK_STATE_UNASSIGNED:
+            gevent.sleep(0.1)
         self.let.join()
 
     def __repr__(self):
@@ -106,51 +105,59 @@ class Worker:
     def __init__(self, agent_addr, parallel_task_limit=None):
         self.agent_addr = agent_addr
         self.tasks = set()
+        self.ptask_semaphore = None
         self.capacity = parallel_task_limit or self.cpu_count()
         self.ptask_semaphore = BoundedSemaphore(self.capacity)
+        self.sync_tag = 0
+        self.sync_flag = False
 
     def utilization(self):
-        return len([t for t in self.tasks if not t.is_adm_task()])/ self.capacity
+        return len([t for t in self.tasks if not t.is_adm_task()]) / self.capacity
+
+    def is_available(self):
+        return self.utilization() < 1
 
     def wait_until_idle(self):
-        if hasattr(self, "ptask_semaphore"):
+        if self.ptask_semaphore is not None:
             self.ptask_semaphore.acquire()
 
     def on_finish_task(self, task):
         self.tasks.remove(task)
         task.clean()
-        if hasattr(self, "ptask_semaphore"):
+        if self.ptask_semaphore is not None:
             self.ptask_semaphore.release()
-
-    def make_task(self, func):
-        func_name = function_index(func)
-        return Task(self.agent_addr, func, func_name, self)
-
-    def exec(self, func, *args, **kwargs):
-        task = self.make_task(func)
-        return task(*args, **kwargs)
-
-    def async_exec(self, func, *args, **kwargs):
-        task = self.make_task(func)
-        task.start(*args, **kwargs)
-        return task
 
     def __getattr__(self, name):
         index = "_adm_{}".format(name)
-        return Task(self.agent_addr, getattr(NULL_AGENT, index), index, self)
+        func = getattr(NULL_AGENT, index)
+
+        def adm_func(*args, **kwargs):
+            task = Task(func, args, kwargs, index)
+            task.assign_to(self)
+            task.join()
+            return task.ret
+
+        return adm_func
 
     def __repr__(self):
         return "Client[{}]".format(self.agent_addr)
 
-    def sync_dir_delta(self, local_path, remote_path):
-        sig = self.dir_signature(remote_path, os.path.isdir(local_path))
-        logging.info("[Worker.Sync]: Got signture[size:%s]", len(sig))
-        delta = dir_delta(sig, local_path)
-        logging.info("[Worker.Sync]: Delta calculated[size:%s]", len(delta))
+    def calculate_dir_delta(self, path):
+        sig = self.dir_signature(path, os.path.isdir(path))
+        logging.info("[Worker.Sync]%s: Got signture[size:%s]", self.agent_addr, len(sig))
+        delta = dir_delta(sig, path)
+        logging.info("[Worker.Sync]%s: Delta calculated[size:%s]", self.agent_addr, len(delta))
         return delta
 
-    def sync_dir_patch(self, delta, remote_path):
-        self.dir_patch(delta, remote_path)
+    def sync_with_delta(self, delta, path):
+        self.dir_patch(delta, path)
         logging.info("[Worker.Sync]%s: Patch finished", self.agent_addr)
         self.clean_cache()
         logging.info("[Worker.Sync]%s: Cache cleaned", self.agent_addr)
+        self.sync_tag += 1
+
+    def is_syncing(self):
+        return self.sync_flag
+
+    def set_syncing(self, value):
+        self.sync_flag = value

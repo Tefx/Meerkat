@@ -1,75 +1,109 @@
-from mrkt.agent import Worker
-from .service import BaseService
-from .platform.base import BasePlatform
-from .utils import flatten_iterables, run_on_each
-
+from collections import deque
 import gevent
 
+from .agent.worker import Task
+from .utils import call_on_each
+
+
+class SyncStack:
+    class Layer:
+        def __init__(self, path):
+            self.path = path
+            self.delta = None
+
+    def __init__(self):
+        self.layers = []
+        self.latest_tag = 0
+
+    def append(self, path):
+        self.layers.append(self.Layer(path))
+
+    def has_unknown_delta(self):
+        return self.latest_tag < len(self.layers)
+
+    def need_sync(self, worker):
+        return worker.sync_tag < self.latest_tag
+
+    def update_delta(self, worker):
+        assert self.has_unknown_delta()
+        assert worker.sync_tag == self.latest_tag
+        layer = self.layers[self.latest_tag]
+        layer.delta = worker.calculate_dir_delta(layer.path)
+        self.latest_tag += 1
+
+    def sync_worker(self, worker):
+        while worker.sync_tag < self.latest_tag:
+            layer = self.layers[worker.sync_tag]
+            worker.sync_with_delta(layer.delta, layer.path)
+        worker.set_syncing(False)
+
+    def start_sync_worker(self, worker):
+        worker.set_syncing(True)
+        gevent.spawn(self.sync_worker, worker)
+
+
 class Cluster:
-    def __init__(self, services, **options):
-        self.services = [s for s in services if isinstance(s, BaseService)]
-        self.platforms = [s for s in services if isinstance(s, BasePlatform)]
-        servers_on_platforms = run_on_each(self.platforms, "services")
-        self.services.extend(flatten_iterables(*servers_on_platforms))
-        run_on_each(self.services, "update_options", async=False, options=options)
-        self.workers = []
+    def __init__(self, platforms, **options):
+        self.platforms = platforms
+        self.task_queue = deque()
+        self.processing_tasks = []
+        self.scheduler = gevent.spawn(self.schedule)
+        self.sync_manager = SyncStack()
+        call_on_each(self.platforms, "prepare_services", options=options)
+
+    def clean(self):
+        self.scheduler.kill()
+        call_on_each(self.platforms, "clean", join=True)
 
     def __enter__(self):
-        self.prepare()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.clean()
 
-    def prepare(self):
-        run_on_each(self.services, "prepare")
-        self.start_workers()
+    @property
+    def workers(self):
+        for platform in self.platforms:
+            for service in platform.services:
+                for worker in service.workers:
+                    yield worker
 
-    def clean(self):
-        run_on_each(self.services, "clean")
-        run_on_each(self.services, "close")
-        run_on_each(self.platforms, "clean")
+    def sync_dir(self, path):
+        self.sync_manager.append(path)
 
-    def start_workers(self):
-        if self.workers:
-            run_on_each(self.services, "stop_workers")
-        self.workers = flatten_iterables(
-            *run_on_each(self.services, "start_workers"))
+    def need_sync(self, worker):
+        return worker.is_syncing() or self.sync_manager.need_sync(worker) or self.sync_manager.has_unknown_delta()
 
-    def sync_dir(self, path, remote_path=None):
-        remote_path = remote_path or path
-        delta = self.workers[0].sync_dir_delta(path, remote_path)
-        run_on_each(self.workers, "sync_dir_patch", delta=delta, remote_path=remote_path)
+    def sync_worker(self, worker):
+        if not worker.is_syncing():
+            if self.sync_manager.need_sync(worker):
+                self.sync_manager.start_sync_worker(worker)
+            elif self.sync_manager.has_unknown_delta():
+                self.sync_manager.update_delta(worker)
+                self.sync_manager.start_sync_worker(worker)
+
+    def schedule(self):
+        while True:
+            for worker in self.workers:
+                if self.need_sync(worker):
+                    self.sync_worker(worker)
+                else:
+                    while worker.utilization() < 1:
+                        if self.task_queue:
+                            task = self.task_queue.popleft()
+                            self.processing_tasks.append(task)
+                            task.assign_to(worker)
+                        else:
+                            break
+            gevent.sleep(0.1)
 
     def submit(self, func, *args, **kwargs):
-        for worker in self.workers:
-            if worker.utilization() < 1:
-                return worker.async_exec(func, *args, **kwargs)
-        return None
-
-    def joinall(self, tasks):
-        for task in tasks:
-            task.join()
+        task = Task(func, args, kwargs)
+        self.task_queue.append(task)
+        return task
 
     def map(self, func, *iterables):
-        args_list = list(zip(*iterables))
-        tasks =[]
-
-        def _schedule():
-            for worker in self.workers:
-                # print([w.tasks for w in self.workers])
-                while worker.utilization() < 1:
-                    if not args_list: return
-                    args = args_list.pop(0)
-                    task = worker.make_task(func)
-                    tasks.append(task)
-                    task.start(*args)
-                    gevent.spawn(_wait, task)
-
-        def _wait(task):
+        tasks = [self.submit(func, *args) for args in zip(*iterables)]
+        for task in tasks:
             task.join()
-            _schedule()
-
-        _schedule()
-        self.joinall(tasks)
         return [task.ret for task in tasks]
