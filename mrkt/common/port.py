@@ -1,8 +1,9 @@
 import struct
 import gevent.socket
 import gevent
-from dill import loads as load, dumps as dump
+from dill import loads, dumps
 
+from .consts import PORT_CONNECT_RETRY_TIMES, PORT_CONNECT_RETRY_INTERVAL
 
 HEADER_STRUCT = ">L"
 HEADER_LEN = struct.calcsize(HEADER_STRUCT)
@@ -76,10 +77,10 @@ class Port:
             chunks.append(recv)
             length -= len(recv)
         buf = b"".join(chunks)
-        return load(buf)
+        return loads(buf)
 
     def write(self, buf):
-        buf = dump(buf)
+        buf = dumps(buf)
         if not isinstance(buf, bytes):
             buf = buf.encode("utf-8")
         msg = struct.pack(HEADER_STRUCT, len(buf)) + buf
@@ -109,7 +110,7 @@ class Port:
     @classmethod
     def create_connector(cls, addr):
         sock = gevent.socket.socket(gevent.socket.AF_INET, gevent.socket.SOCK_STREAM)
-        if try_connect(sock, addr, 10, 1):
+        if try_connect(sock, addr, PORT_CONNECT_RETRY_TIMES, PORT_CONNECT_RETRY_INTERVAL):
             return cls(sock)
 
     def reconnect(self):

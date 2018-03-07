@@ -1,8 +1,9 @@
-from collections import deque
 import gevent
+from collections import deque
 
-from .worker import Task
-from .utils import call_on_each
+from .task import Task
+from ..common.consts import *
+from ..common.utils import call_on_each
 
 
 class SyncStack:
@@ -43,13 +44,15 @@ class SyncStack:
 
 
 class Cluster:
-    def __init__(self, platforms, **options):
+    def __init__(self, platforms, sync_current_dir=CLUSTER_SYNC_CURRENT_DIR_DEFAULT, **options):
         self.platforms = platforms
         self.task_queue = deque()
         self.processing_tasks = []
         self.scheduler = gevent.spawn(self.schedule)
         self.sync_manager = SyncStack()
         call_on_each(self.platforms, "prepare_services", options=options)
+        if sync_current_dir:
+            self.sync_dir(".")
 
     def clean(self):
         self.scheduler.kill()
@@ -95,7 +98,7 @@ class Cluster:
                             task.assign_to(worker)
                         else:
                             break
-            gevent.sleep(0.1)
+            gevent.sleep(CLUSTER_SCHEDULE_INTERVAL)
 
     def submit(self, func, *args, **kwargs):
         task = Task(func, args, kwargs)
@@ -106,4 +109,4 @@ class Cluster:
         tasks = [self.submit(func, *args) for args in zip(*iterables)]
         for task in tasks:
             task.join()
-        return [task.ret for task in tasks]
+            yield task.ret

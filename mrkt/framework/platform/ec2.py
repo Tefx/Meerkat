@@ -1,31 +1,35 @@
 from threading import current_thread
 from gevent.monkey import patch_all
+
 patch_all(thread=current_thread().name == "MainThread")
 import boto3
 import gevent
 import urllib.request
 from copy import copy
 from logging import getLogger
-
-from .base import BasePlatform
+from .local import BasePlatform
 from ..service import SSHService
-from ..utils import call_on_each
+from ...common.utils import call_on_each
+from ...common.consts import *
 
 logger = getLogger(__name__)
 
-COREOS_AMI_URL = "https://stable.release.core-os.net/amd64-usr/current/coreos_production_ami_hvm_{region}.txt"
-
 
 def fetch_coreos_ami(region):
-    url = COREOS_AMI_URL.format(region=region)
+    url = PLATFORM_EC2_URL_AMI_COREOS.format(region=region)
     return urllib.request.urlopen(url).read().decode().strip()
 
 
 class EC2(BasePlatform):
+    class CleanAction:
+        Null = "none"
+        Stop = "stop"
+        Terminate = "terminate"
+
     def __init__(self, srvc_dict, sgroup, keyname, keyfile,
-                 ami=None, username="core",
-                 pgroup=None, region="ap-southeast-1",
-                 clean_action="stop", **options):
+                 ami=None, username=PLATFORM_EC2_USERNAME_DEFAULT,
+                 pgroup=None, region=PLATFORM_EC2_REGION_DEFAULT,
+                 clean_action=CleanAction.Stop, **options):
         super().__init__(**options)
         self.instances = []
         self.srvc_dict = srvc_dict
@@ -50,7 +54,7 @@ class EC2(BasePlatform):
              'Values': [self.ami]},
             {"Name": "instance-type",
              "Values": list(self.srvc_dict.keys())},
-            {"Name": "tag:mrkt",
+            {"Name": "tag:{}".format(PLATFORM_EC2_INSTANCE_TAG),
              "Values": ["True"]}
         ]
         return [ins for ins in self.ec2.instances.filter(Filters=filters)
@@ -73,7 +77,7 @@ class EC2(BasePlatform):
                     ins.start()
         logger.info("[AWS]Preparing VMs: New launch %s", srvc_dict)
         tags = [{"ResourceType": "instance",
-                 "Tags": [{"Key": "mrkt", "Value": "True"}]}]
+                 "Tags": [{"Key": PLATFORM_EC2_INSTANCE_TAG, "Value": "True"}]}]
         for vm_type, num in srvc_dict.items():
             if num > 0:
                 self.instances.extend(
@@ -90,10 +94,12 @@ class EC2(BasePlatform):
     def create_service(self, instance, options):
         instance.load()
         while instance.state["Name"] != "running":
-            gevent.sleep(1)
+            gevent.sleep(PLATFORM_EC2_INSTANCE_READY_WAIT_INTERVAL)
             instance.load()
         service = SSHService(instance.public_dns_name, username=self.username, key_filename=self.keyfile)
-        service.set_options(dict(retry_ssh=10, retry_ssh_interval=1), options, self.options)
+        service.set_options(
+            dict(retry_ssh=PLATFORM_EC2_SSH_RETRY_TIMES, retry_ssh_interval=PLATFROM_EC2_SSH_RETRY_INTERVAL), options,
+            self.options)
         service.prepare_workers()
         self.services.append(service)
 
@@ -105,5 +111,5 @@ class EC2(BasePlatform):
     def clean(self):
         gevent.joinall(self.pending_lets)
         call_on_each(self.services, "clean", join=True)
-        if self.clean_action != "none":
+        if self.clean_action != self.CleanAction.Null:
             call_on_each(self.instances, self.clean_action, join=True)

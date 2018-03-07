@@ -1,6 +1,0 @@
-[
-    "localhost":{
-    "type": "DockerServerViaSSH",
-    "worker_limit": 10
-}
-]

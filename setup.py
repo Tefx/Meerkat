@@ -1,15 +1,14 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(name="mrkt",
       version="0.1",
       author="tefx",
-      packages=["mrkt", "mrkt.platform", "mrkt.agent"],
+      packages=find_packages(),
       include_package_data=True,
-      install_requires=["gevent", "dill"],
+      install_requires=["gevent", "dill", "paramiko"],
       extras_require={
-          'ssh': ["paramiko"],
           'AWS': ["boto3"],
       },
       entry_points=dict(
-          console_scripts=["mrkt-agent=mrkt.agent.agent:DynamicAgent.launch",
+          console_scripts=["mrkt-agent=mrkt.agent:DynamicAgent.launch",
                            "mrkt-pack=mrkt.tools:pack_docker"]))

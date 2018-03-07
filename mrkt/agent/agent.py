@@ -1,62 +1,22 @@
-from gevent.monkey import patch_thread
+from gevent.monkey import patch_thread;
 
 patch_thread()
+import gevent
 import argparse
 import importlib
-import inspect
 import os
 import os.path
 import logging
 import signal
 import sys
-
-import gevent
 from multiprocessing import Process
 from uuid import uuid1
-import traceback
 
-from .port import Port
-from .rdiff import dir_sig, dir_patch
-
-DEFAULT_PORT = 8333
-PROCESS_CLEAN_INTERVAL = 5
-
-
-class TaskFailure(Exception):
-    pass
-
-
-class CatchException:
-    def __init__(self, exc):
-        self.exc = exc
-        self.tb = traceback.format_exc()
-
-    def re_raise(self):
-        print(self.tb)
-        raise TaskFailure() from self.exc
-
-
-def get_module_name(obj):
-    module_name = obj.__module__
-    if module_name == "__main__":
-        module_name = os.path.splitext(
-            os.path.basename(inspect.getmodule(obj).__file__))[0]
-    return module_name
-
-
-def function_index(func):
-    if inspect.ismethod(func):
-        func_name = "{}.{}".format(func.__self__.__class__.__name__, func.__name__)
-    else:
-        func_name = func.__name__
-    return "{}:{}".format(get_module_name(func), func_name)
-
-
-def index_split(index):
-    if ":" in index:
-        return index.split(":")
-    else:
-        return index, None
+from ..common.consts import AGENT_PORT, AGENT_CLEAN_PROCESS_INTERVAL
+from ..common.exceptions import ExceptionCaught
+from ..common.port import Port
+from ..common.rdiff import dir_sig, dir_patch
+from ..common.utils import function_index, index_split
 
 
 class Agent:
@@ -111,7 +71,7 @@ class Agent:
         try:
             res = func(**kwargs)
         except Exception as e:
-            res = CatchException(e)
+            res = ExceptionCaught(e)
         logging.info("[%s.Result]: %s", self.__class__.__name__, res)
         if hasattr(res, "__dump__"):
             res = res.__dump__()
@@ -130,7 +90,7 @@ class Agent:
             self.processes = {uuid: p for uuid, p in self.processes.items() if p.is_alive()}
             logging.info("[%s.Cleaner]: remaining %s tasks", self.__class__.__name__, len(self.processes))
             logging.debug("[%s.Cleaner]: %s", self.__class__.__name__, [(p, p.task) for p in self.processes.values()])
-            gevent.sleep(PROCESS_CLEAN_INTERVAL)
+            gevent.sleep(AGENT_CLEAN_PROCESS_INTERVAL)
 
     def request_handler(self, port):
         logging.info("[%s.Request]: %s", self.__class__.__name__, port)
@@ -193,7 +153,7 @@ class DynamicAgent(Agent):
         parser.add_argument("path", type=str, help="path",
                             nargs="?", default=".")
         parser.add_argument("-p", "--port", type=int,
-                            help="port", default=DEFAULT_PORT)
+                            help="port", default=AGENT_PORT)
         parser.add_argument("-l", "--logging", type=str,
                             help="Logging level", default="warning")
         args = parser.parse_args()

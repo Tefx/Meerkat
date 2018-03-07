@@ -1,4 +1,4 @@
-from ..utils import call_on_each
+from ...common.utils import call_on_each
 
 
 class BasePlatform:
