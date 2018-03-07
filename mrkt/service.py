@@ -1,19 +1,19 @@
-import mrkt.agent.worker
-
 from threading import current_thread
-from logging import getLogger
-logger = getLogger(__name__)
 from gevent.monkey import patch_all
 
 patch_all(thread=current_thread().name == "MainThread")
-
-from . import agent
 
 import os
 import os.path
 import paramiko
 import json
 from gevent import sleep
+from logging import getLogger
+
+from .agent import DEFAULT_PORT
+from .worker import Worker
+
+logger = getLogger(__name__)
 
 AGENT_RUN_CMD = "mrkt-agent -p {in_port} -l debug ."
 DOCKER_RUN_CMD = "docker run -itd --name {name} -p {out_port}:{in_port} {image} {engine_start_cmd}"
@@ -78,7 +78,7 @@ class SSHService(BaseService):
         self.ssh_options = ssh_options
         self.retry_ssh = 2
         self.retry_ssh_interval = 1
-        self.worker_port = agent.DEFAULT_PORT
+        self.worker_port = DEFAULT_PORT
 
     def set_options(self, *options_list):
         ssh_options = self.ssh_options
@@ -183,7 +183,7 @@ class SSHService(BaseService):
 
     def start_docker(self, out_port):
         self.kill_dockers(self.existing_dockers())
-        port = agent.DEFAULT_PORT
+        port = DEFAULT_PORT
         name = "mrkt_{}".format(out_port)
         engine_start_cmd = AGENT_RUN_CMD.format(in_port=port)
         docker_start_cmd = DOCKER_RUN_CMD.format(
@@ -192,9 +192,8 @@ class SSHService(BaseService):
         return name if self.ssh_exec(docker_start_cmd) else None
 
     def start_workers(self, num=1):
-        self.dockers = [self.start_docker(agent.DEFAULT_PORT)]
-        self.workers = [mrkt.agent.worker.Worker(
-            (self.addr, self.worker_port)) for _ in range(num)]
+        self.dockers = [self.start_docker(DEFAULT_PORT)]
+        self.workers = [Worker((self.addr, self.worker_port)) for _ in range(num)]
         return self.workers
 
     def stop_workers(self):
@@ -202,5 +201,4 @@ class SSHService(BaseService):
         self.workers = []
 
     def copy_workers(self):
-        return [mrkt.agent.worker.Worker((self.addr, self.worker_port))
-                for _ in self.workers]
+        return [Worker((self.addr, self.worker_port)) for _ in self.workers]

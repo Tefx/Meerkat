@@ -15,7 +15,7 @@ from multiprocessing import Process
 from uuid import uuid1
 import traceback
 
-from .rpc import Port
+from .port import Port
 from .rdiff import dir_sig, dir_patch
 
 DEFAULT_PORT = 8333

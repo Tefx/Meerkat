@@ -1,14 +1,12 @@
-import inspect
-import os.path
-from logging import getLogger
-logger = getLogger(__name__)
-
 import gevent
-from gevent._semaphore import BoundedSemaphore
+from gevent.lock import BoundedSemaphore
+import os.path
+import inspect
+from logging import getLogger
 
-from .agent import DynamicAgent, CatchException, function_index
-from mrkt.agent.rpc import Port
-from .rdiff import dir_delta
+from .agent import DynamicAgent, CatchException, function_index, Port, dir_delta
+
+logger = getLogger(__name__)
 
 NULL_AGENT = DynamicAgent()
 TASK_STATE_UNASSIGNED = 0

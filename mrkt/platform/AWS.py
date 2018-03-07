@@ -1,16 +1,17 @@
 from threading import current_thread
-from logging import getLogger
-logger = getLogger(__name__)
 from gevent.monkey import patch_all
 patch_all(thread=current_thread().name == "MainThread")
 import boto3
 import gevent
 import urllib.request
 from copy import copy
+from logging import getLogger
 
 from .base import BasePlatform
 from ..service import SSHService
 from ..utils import call_on_each
+
+logger = getLogger(__name__)
 
 COREOS_AMI_URL = "https://stable.release.core-os.net/amd64-usr/current/coreos_production_ami_hvm_{region}.txt"
 

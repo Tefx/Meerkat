@@ -1,7 +1,7 @@
 import struct
-from dill import loads as load, dumps as dump
-import gevent
 import gevent.socket
+import gevent
+from dill import loads as load, dumps as dump
 
 
 HEADER_STRUCT = ">L"

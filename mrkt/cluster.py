@@ -1,7 +1,7 @@
 from collections import deque
 import gevent
 
-from .agent.worker import Task
+from .worker import Task
 from .utils import call_on_each
 
 
