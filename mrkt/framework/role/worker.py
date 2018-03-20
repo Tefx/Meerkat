@@ -1,9 +1,10 @@
 import os.path
 from logging import getLogger
 from gevent.lock import BoundedSemaphore
+
+from ...agent import DynamicAgent
+from ...common.utils import dir_delta
 from .task import Task
-from ..agent import DynamicAgent
-from ..common.rdiff import dir_delta
 
 logger = getLogger(__name__)
 null_agent = DynamicAgent()
@@ -50,18 +51,18 @@ class Worker:
     def __repr__(self):
         return "Client[{}]".format(self.agent_addr)
 
-    def calculate_dir_delta(self, path):
+    def calc_dir_delta(self, path):
         sig = self.dir_signature(path, os.path.isdir(path))
-        logger.info("[Worker.Sync]%s: Got signture[size:%s]", self.agent_addr, len(sig))
+        logger.info("[Worker.calc_delta]: Got signature[size:%s] from %s", len(sig), self.agent_addr[0])
         delta = dir_delta(sig, path)
-        logger.info("[Worker.Sync]%s: Delta calculated[size:%s]", self.agent_addr, len(delta))
+        logger.info("[Worker.calc_delta]: Delta calculated[size:%s]", len(delta))
         return delta
 
     def sync_with_delta(self, delta, path):
         self.dir_patch(delta, path)
-        logger.info("[Worker.Sync]%s: Patch finished", self.agent_addr)
+        logger.info("[Worker.sync] with %s: Patch finished", self.agent_addr[0])
         self.clean_cache()
-        logger.info("[Worker.Sync]%s: Cache cleaned", self.agent_addr)
+        logger.info("[Worker.sync] with %s: Cache cleaned", self.agent_addr[0])
         self.sync_tag += 1
 
     def is_syncing(self):
@@ -69,3 +70,8 @@ class Worker:
 
     def set_syncing(self, value):
         self.sync_flag = value
+
+    def clean(self):
+        for task in self.tasks:
+            task.kill()
+        self.tasks = set()

@@ -5,7 +5,7 @@ from pkg_resources import resource_string
 from ..common.consts import TOOL_CMD_PIP
 
 FILE_REQUIREMENTS = "requirements.txt"
-FILE_DOCKER_TEMPLATE = "../share/dockerfile/template"
+FILE_DOCKER_TEMPLATE = "../share/dockerfiles/template"
 
 
 def pack():

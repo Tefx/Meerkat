@@ -3,7 +3,7 @@ import gevent.socket
 import gevent
 from dill import loads, dumps
 
-from .consts import PORT_CONNECT_RETRY_TIMES, PORT_CONNECT_RETRY_INTERVAL
+from .consts import PORT_CONNECT_RETRIES, PORT_CONNECT_RETRY_INTERVAL
 
 HEADER_STRUCT = ">L"
 HEADER_LEN = struct.calcsize(HEADER_STRUCT)
@@ -30,20 +30,21 @@ class Remotable:
 def safe_recv(sock, length):
     try:
         buf = sock.recv(length)
-        if buf:
-            return buf
-    except OSError:
+        if not buf:
+            raise OSError("port failed to receive data")
+        return buf
+    except OSError as e:
         sock.close()
-        return False
+        raise OSError("port failed to receive data") from e
 
 
 def safe_send(sock, buf):
     try:
         sock.sendall(buf)
         return True
-    except OSError:
+    except OSError as e:
         sock.close()
-        return False
+        raise OSError("port failed to send data") from e
 
 
 def try_connect(sock, addr, times, intervals):
@@ -51,29 +52,26 @@ def try_connect(sock, addr, times, intervals):
         try:
             sock.connect(addr)
             break
-        except:
+        except OSError:
             gevent.sleep(intervals)
             times -= 1
     return times
 
 
-class Port:
+class ObjPort:
     def __init__(self, sock):
         self._sock = sock
+        self.address = None
 
     def __del__(self):
         self._sock.close()
 
     def read(self):
         header = safe_recv(self._sock, HEADER_LEN)
-        if not header:
-            return False
         length = struct.unpack(HEADER_STRUCT, header)[0]
         chunks = []
         while length:
             recv = safe_recv(self._sock, length)
-            if not recv:
-                return False
             chunks.append(recv)
             length -= len(recv)
         buf = b"".join(chunks)
@@ -87,8 +85,11 @@ class Port:
         return safe_send(self._sock, msg)
 
     def close(self):
-        self._sock.shutdown(gevent.socket.SHUT_RDWR)
-        self._sock.close()
+        try:
+            self._sock.shutdown(gevent.socket.SHUT_RDWR)
+            self._sock.close()
+        except OSError:
+            pass
 
     @property
     def peer_name(self):
@@ -110,10 +111,13 @@ class Port:
     @classmethod
     def create_connector(cls, addr):
         sock = gevent.socket.socket(gevent.socket.AF_INET, gevent.socket.SOCK_STREAM)
-        if try_connect(sock, addr, PORT_CONNECT_RETRY_TIMES, PORT_CONNECT_RETRY_INTERVAL):
-            return cls(sock)
+        if try_connect(sock, addr, PORT_CONNECT_RETRIES, PORT_CONNECT_RETRY_INTERVAL):
+            port = cls(sock)
+            port.address = sock.getpeername()
+        else:
+            raise OSError("Create port failed.")
+        return port
 
     def reconnect(self):
-        addr = self._sock.getpeername()
         self._sock = gevent.socket.socket(gevent.socket.AF_INET, gevent.socket.SOCK_STREAM)
-        self._sock.connect(addr)
+        self._sock.connect(self.address)

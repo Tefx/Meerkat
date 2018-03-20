@@ -5,8 +5,9 @@ setup(name="mrkt",
       author="tefx",
       packages=find_packages(),
       include_package_data=True,
-      install_requires=["gevent", "dill", "paramiko"],
+      install_requires=["gevent", "dill", "lz4"],
       extras_require={
+          "SSH": ["paramiko"],
           'AWS': ["boto3"],
       },
       entry_points=dict(

@@ -1,15 +1,15 @@
 import traceback
 
 
-class TaskFailed(Exception):
+class TaskError(Exception):
     pass
 
 
-class ExceptionCaught:
+class TaskFailure:
     def __init__(self, exception):
         self.exception = exception
         self.tb = traceback.format_exc()
 
     def re_raise(self):
         print(self.tb)
-        raise TaskFailed() from self.exception
+        raise TaskError() from self.exception

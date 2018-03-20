@@ -12,11 +12,10 @@ import sys
 from multiprocessing import Process
 from uuid import uuid1
 
-from ..common.consts import AGENT_PORT, AGENT_CLEAN_PROCESS_INTERVAL
-from ..common.exceptions import ExceptionCaught
-from ..common.port import Port
-from ..common.rdiff import dir_sig, dir_patch
-from ..common.utils import function_index, index_split
+from ..common.port import ObjPort
+from ..common.exceptions import TaskFailure
+from ..common.consts import AGENT_PORT, AGENT_CLEAN_INTERVAL
+from ..common.utils import dir_sig, dir_patch, function_index
 
 
 class Agent:
@@ -28,7 +27,7 @@ class Agent:
 
     def register(self, func, index=None):
         index = index or function_index(func)
-        logging.debug("[%s.LoadIntoCache]: %s", self.__class__.__name__, index)
+        logging.info("[%s.register]: %s", self.__class__.__name__, index)
         self.function_store[index] = func
         return func
 
@@ -71,15 +70,14 @@ class Agent:
         try:
             res = func(**kwargs)
         except Exception as e:
-            res = ExceptionCaught(e)
-        logging.info("[%s.Result]: %s", self.__class__.__name__, res)
+            res = TaskFailure(e)
         if hasattr(res, "__dump__"):
             res = res.__dump__()
         port.write(res)
 
     def run(self, port=0, pipe=None):
         logging.info("[%s] stated on %s", self.__class__.__name__, port)
-        listener = Port.create_listener(port, pipe)
+        listener = ObjPort.create_listener(port, pipe)
         gevent.spawn(self.pool_cleaner)
         while True:
             port = listener.accept()
@@ -88,29 +86,24 @@ class Agent:
     def pool_cleaner(self):
         while True:
             self.processes = {uuid: p for uuid, p in self.processes.items() if p.is_alive()}
-            logging.info("[%s.Cleaner]: remaining %s tasks", self.__class__.__name__, len(self.processes))
-            logging.debug("[%s.Cleaner]: %s", self.__class__.__name__, [(p, p.task) for p in self.processes.values()])
-            gevent.sleep(AGENT_CLEAN_PROCESS_INTERVAL)
+            logging.debug("[%s.Cleaner]: remaining %s tasks", self.__class__.__name__, len(self.processes))
+            gevent.sleep(AGENT_CLEAN_INTERVAL)
 
     def request_handler(self, port):
-        logging.info("[%s.Request]: %s", self.__class__.__name__, port)
+        logging.info("[%s.request_handler] begins on %s", self.__class__.__name__, port)
         uuid = uuid1().int
         port.write(uuid)
         message = port.read()
-        if message:
-            index, kwargs = message
-            func = self.look_up_function(index)
-            logging.info("[%s.Call]: %s on %s",
-                         self.__class__.__name__, index, kwargs)
-            if not index.startswith("_adm_"):
-                p = Process(target=self.invoke, name="mrtk_t{}".format(uuid), args=(port, func, kwargs))
-                setattr(p, "task", (index, func, kwargs))
-                p.start()
-                self.processes[uuid] = p
-            else:
-                self.invoke(port, func, kwargs)
+        index, kwargs = message
+        func = self.look_up_function(index)
+        logging.info("[%s.request_handler]: executes %s", self.__class__.__name__, index)
+        if not index.startswith("_adm_"):
+            p = Process(target=self.invoke, name="mrtk_t{}".format(uuid), args=(port, func, kwargs))
+            setattr(p, "task", (index, func, kwargs))
+            p.start()
+            self.processes[uuid] = p
         else:
-            logging.CRITICAL("[%s.Call]: cannot receive request!", self.__class__.__name__)
+            self.invoke(port, func, kwargs)
 
 
 class DynamicAgent(Agent):
@@ -119,14 +112,11 @@ class DynamicAgent(Agent):
         self.module_cache = {}
         if path:
             self.path = os.path.abspath(path)
-            self.setup_path(path)
-
-    def setup_path(self, path):
-        sys.path.insert(1, os.path.abspath(path))
+            sys.path.insert(1, os.path.abspath(path))
 
     def look_up_function(self, index):
         if index not in self.function_store:
-            module_name, func_name = index_split(index)
+            module_name, func_name = index.split(":")
             if module_name not in self.module_cache:
                 self.module_cache[module_name] = importlib.import_module(
                     module_name)

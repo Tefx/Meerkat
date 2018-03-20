@@ -1,0 +1,8 @@
+FROM python:alpine3.7
+
+WORKDIR /mrkt
+ADD ./dist/*.whl /mrkt/
+RUN apk add --no-cache duplicity build-base &&\
+    rm /mrkt/gevent* /mrkt/greenlet* && pip install --no-cache-dir *.whl && rm /mrkt/*.whl &&\
+    apk del build-base
+

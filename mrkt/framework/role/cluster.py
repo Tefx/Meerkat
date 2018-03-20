@@ -1,13 +1,15 @@
-import gevent
-from collections import deque
+from ...common import patch;
 
-from .task import Task
-from ..common.consts import *
-from ..common.utils import call_on_each
+patch()
+import gevent
+from gevent.pool import Group
+
+from ...common import call_on_each
+from ...common.consts import *
 
 
 class SyncStack:
-    class Layer:
+    class SyncLayer:
         def __init__(self, path):
             self.path = path
             self.delta = None
@@ -15,9 +17,10 @@ class SyncStack:
     def __init__(self):
         self.layers = []
         self.latest_tag = 0
+        self.sync_group = Group()
 
     def append(self, path):
-        self.layers.append(self.Layer(path))
+        self.layers.append(self.SyncLayer(path))
 
     def has_unknown_delta(self):
         return self.latest_tag < len(self.layers)
@@ -29,33 +32,42 @@ class SyncStack:
         assert self.has_unknown_delta()
         assert worker.sync_tag == self.latest_tag
         layer = self.layers[self.latest_tag]
-        layer.delta = worker.calculate_dir_delta(layer.path)
+        layer.delta = worker.calc_dir_delta(layer.path)
         self.latest_tag += 1
 
-    def sync_worker(self, worker):
-        while worker.sync_tag < self.latest_tag:
-            layer = self.layers[worker.sync_tag]
-            worker.sync_with_delta(layer.delta, layer.path)
-        worker.set_syncing(False)
+    def start_sync(self, worker):
+        def _sync():
+            while worker.sync_tag < self.latest_tag:
+                layer = self.layers[worker.sync_tag]
+                worker.sync_with_delta(layer.delta, layer.path)
+            worker.set_syncing(False)
 
-    def start_sync_worker(self, worker):
         worker.set_syncing(True)
-        gevent.spawn(self.sync_worker, worker)
+        self.sync_group.spawn(_sync)
+
+    def stop(self):
+        self.sync_group.kill()
 
 
 class Cluster:
-    def __init__(self, platforms, sync_current_dir=CLUSTER_SYNC_CURRENT_DIR_DEFAULT, **options):
+    def submit(self, func, *args, **kwargs):
+        raise NotImplementedError
+
+    def schedule(self):
+        raise NotImplementedError
+
+    def __init__(self, platforms, sync_current_dir=CLUSTER_SYNC_CURRENT_DIR, **options):
         self.platforms = platforms
-        self.task_queue = deque()
         self.processing_tasks = []
-        self.scheduler = gevent.spawn(self.schedule)
         self.sync_manager = SyncStack()
         call_on_each(self.platforms, "prepare_services", options=options)
+        self.scheduler = gevent.spawn(self.schedule)
         if sync_current_dir:
             self.sync_dir(".")
 
     def clean(self):
         self.scheduler.kill()
+        self.sync_manager.stop()
         call_on_each(self.platforms, "clean", join=True)
 
     def __enter__(self):
@@ -80,33 +92,7 @@ class Cluster:
     def sync_worker(self, worker):
         if not worker.is_syncing():
             if self.sync_manager.need_sync(worker):
-                self.sync_manager.start_sync_worker(worker)
+                self.sync_manager.start_sync(worker)
             elif self.sync_manager.has_unknown_delta():
                 self.sync_manager.update_delta(worker)
-                self.sync_manager.start_sync_worker(worker)
-
-    def schedule(self):
-        while True:
-            for worker in self.workers:
-                if self.need_sync(worker):
-                    self.sync_worker(worker)
-                else:
-                    while worker.utilization() < 1:
-                        if self.task_queue:
-                            task = self.task_queue.popleft()
-                            self.processing_tasks.append(task)
-                            task.assign_to(worker)
-                        else:
-                            break
-            gevent.sleep(CLUSTER_SCHEDULE_INTERVAL)
-
-    def submit(self, func, *args, **kwargs):
-        task = Task(func, args, kwargs)
-        self.task_queue.append(task)
-        return task
-
-    def map(self, func, *iterables):
-        tasks = [self.submit(func, *args) for args in zip(*iterables)]
-        for task in tasks:
-            task.join()
-            yield task.ret
+                self.sync_manager.start_sync(worker)

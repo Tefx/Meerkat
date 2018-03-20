@@ -1,0 +1,4 @@
+python setup.py bdist_wheel
+pip wheel -r mrkt/share/dockerfiles/.agentdeps -w dist/
+docker build -f mrkt/share/dockerfiles/slim -t tefx/mrkt:latest --squash .
+docker push tefx/mrkt:latest
